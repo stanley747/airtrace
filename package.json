@@ -1,0 +1,26 @@
+{
+  "name": "airtrace",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "leaflet": "latest",
+    "next": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "react-leaflet": "latest"
+  },
+  "devDependencies": {
+    "@types/leaflet": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "typescript": "latest"
+  }
+}
