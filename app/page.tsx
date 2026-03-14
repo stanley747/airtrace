@@ -8,12 +8,20 @@ function formatShare(value: number) {
   return `${value}%`;
 }
 
-function formatFeedTimestamp(value: string) {
-  const date = new Date(value);
-  const hour = `${date.getUTCHours()}`.padStart(2, "0");
-  const month = `${date.getUTCMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getUTCDate()}`.padStart(2, "0");
-  return `${month}/${day} ${hour}:00 UTC`;
+function formatKathmanduTime(value: string) {
+  return `${new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Kathmandu",
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  })
+    .format(new Date(value))
+    .replace(",", "")} NPT`;
 }
 
 type HomePageProps = {
@@ -86,23 +94,12 @@ export default async function HomePage({ searchParams }: HomePageProps) {
               <strong>{selectedCity.confidence.toUpperCase()}</strong>
             </div>
             <div className="refresh-meta">
-              <span className="status-label">LAST UPDATED</span>
-              <strong>
-                {new Intl.DateTimeFormat("en-US", {
-                  timeZone: "Asia/Kathmandu",
-                  weekday: "short",
-                  day: "2-digit",
-                  month: "short",
-                  year: "numeric",
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  second: "2-digit",
-                  hour12: false
-                })
-                  .format(new Date(selectedCity.updatedAt))
-                  .replace(",", "")}{" "}
-                NPT
-              </strong>
+              <span className="status-label">PM2.5 UPDATED</span>
+              <strong>{formatKathmanduTime(selectedCity.updatedAt)}</strong>
+            </div>
+            <div className="refresh-meta">
+              <span className="status-label">MODEL REFRESHED</span>
+              <strong>{formatKathmanduTime(selectedCity.generatedAt)}</strong>
             </div>
           </div>
         </header>
@@ -110,7 +107,7 @@ export default async function HomePage({ searchParams }: HomePageProps) {
         <section className="terminal-panel ticker-panel">
           <span className="ticker-label">ACTIVE READOUT</span>
           <p className="ticker-text">
-            PM2.5 {selectedCity.pm25} ug/m3 // {selectedCity.category.toUpperCase()} // Imported {formatShare(selectedCity.importedShare)} // Local {formatShare(selectedCity.localShare)} // Dominant source {strongestSource?.name ?? "N/A"} // Prevailing wind {strongestWind?.direction ?? "N/A"} {strongestWind?.speedKph ?? 0} kph
+            PM2.5 {selectedCity.pm25} ug/m3 {" | "} {selectedCity.category.toUpperCase()} {" | "} Imported {formatShare(selectedCity.importedShare)} {" | "} Local {formatShare(selectedCity.localShare)} {" | "} Dominant source {strongestSource?.name ?? "N/A"} {" | "} Prevailing wind {strongestWind?.direction ?? "N/A"} {strongestWind?.speedKph ?? 0} kph
           </p>
         </section>
 
@@ -119,6 +116,13 @@ export default async function HomePage({ searchParams }: HomePageProps) {
             <span className="panel-label">PM2.5</span>
             <strong className="metric-number">{selectedCity.pm25}</strong>
             <span className="metric-sub">UG/M3 CURRENT LOAD</span>
+          </article>
+          <article className="terminal-panel metric-panel">
+            <span className="panel-label">AQI</span>
+            <strong className="metric-number">{selectedCity.aqi}</strong>
+            <span className="metric-sub">
+              PM2.5-BASED AIR QUALITY INDEX // {selectedCity.aqiCategory}
+            </span>
           </article>
           <article className="terminal-panel metric-panel">
             <span className="panel-label">POLLUTION FROM OUTSIDE NEPAL</span>

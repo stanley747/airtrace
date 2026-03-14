@@ -21,96 +21,51 @@ type AttributionMapProps = {
 type SourceRegion = {
   center: LatLngExpression;
   label: string;
-  color: string;
   radius: number;
 };
 
-const sourceRegionsByCity: Record<string, SourceRegion[]> = {
-  Kathmandu: [
-    {
+function getSourceRegion(sourceName: string): SourceRegion | null {
+  if (sourceName === "Kathmandu traffic and brick kilns") {
+    return {
+      center: [27.7172, 85.324],
+      label: sourceName,
+      radius: 18000
+    };
+  }
+
+  if (sourceName === "Upwind fire activity" || sourceName === "Probable agricultural burning, northern India") {
+    return {
       center: [27.1, 83.6],
-      label: "Agricultural burning corridor",
-      color: "#d46d34",
+      label: sourceName,
       radius: 42000
-    },
-    {
+    };
+  }
+
+  if (sourceName === "Industrial belt across the Indo-Gangetic Plain") {
+    return {
       center: [27.9, 84.25],
-      label: "Indo-Gangetic haze belt",
-      color: "#b88935",
-      radius: 38000
-    }
-  ],
-  Delhi: [
-    {
-      center: [29.0, 76.15],
-      label: "Agricultural residue burning",
-      color: "#d46d34",
+      label: sourceName,
       radius: 36000
-    },
-    {
-      center: [28.9, 77.55],
-      label: "Industrial transport corridor",
-      color: "#b88935",
-      radius: 28000
-    }
-  ],
-  Lahore: [
-    {
-      center: [31.1, 73.65],
-      label: "Punjab crop burning corridor",
-      color: "#d46d34",
-      radius: 40000
-    },
-    {
-      center: [31.72, 74.9],
-      label: "Regional industrial haze",
-      color: "#b88935",
-      radius: 32000
-    }
-  ],
-  Dhaka: [
-    {
-      center: [23.55, 90.05],
-      label: "Brick kiln belt",
-      color: "#d46d34",
-      radius: 28000
-    },
-    {
-      center: [24.0, 89.85],
-      label: "Cross-border haze corridor",
-      color: "#b88935",
-      radius: 46000
-    }
-  ],
-  Karachi: [
-    {
-      center: [25.1, 66.65],
-      label: "Arabian coastal transport",
-      color: "#d46d34",
-      radius: 42000
-    },
-    {
-      center: [24.95, 67.5],
-      label: "Industrial and dust corridor",
-      color: "#b88935",
-      radius: 34000
-    }
-  ],
-  Kinshasa: [
-    {
-      center: [-4.2, 14.85],
-      label: "Regional biomass transport",
-      color: "#d46d34",
-      radius: 52000
-    },
-    {
-      center: [-4.62, 15.45],
-      label: "Urban combustion cluster",
-      color: "#b88935",
+    };
+  }
+
+  if (sourceName === "Dust resuspension") {
+    return {
+      center: [27.42, 84.55],
+      label: sourceName,
       radius: 26000
-    }
-  ]
-};
+    };
+  }
+
+  return null;
+}
+
+function getShareColor(share: number) {
+  if (share >= 40) return "#cf4b3c";
+  if (share >= 30) return "#de6a3c";
+  if (share >= 20) return "#e39b46";
+  return "#d7ba65";
+}
 
 const cityIcon = new DivIcon({
   className: "leaflet-city-pin",
@@ -121,7 +76,23 @@ const cityIcon = new DivIcon({
 
 export function AttributionMapClient({ city }: AttributionMapProps) {
   const center: LatLngExpression = [city.coordinates.lat, city.coordinates.lng];
-  const sourceRegions = sourceRegionsByCity[city.city] ?? [];
+  const sourceRegions = [...city.sources]
+    .sort((a, b) => b.share - a.share)
+    .map((source) => {
+      const region = getSourceRegion(source.name);
+
+      if (!region) {
+        return null;
+      }
+
+      return {
+        ...region,
+        radius: Math.round(region.radius * (0.72 + source.share / 100)),
+        label: `${source.name} (${source.share}%)`,
+        color: getShareColor(source.share)
+      };
+    })
+    .filter((region): region is SourceRegion & { color: string } => region !== null);
   const corridorPath: LatLngExpression[] = sourceRegions.map((region) => region.center);
   corridorPath.push(center);
 
@@ -182,7 +153,7 @@ export function AttributionMapClient({ city }: AttributionMapProps) {
         </span>
         <span>
           <i className="legend-swatch legend-swatch-orange" />
-          Upwind source region
+          Contributor region
         </span>
       </div>
     </div>

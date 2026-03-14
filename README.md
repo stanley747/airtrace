@@ -8,7 +8,7 @@ AirTrace is a Next.js pollution attribution dashboard for Kathmandu, Nepal. It c
 - OpenAQ station search across Nepal with Kathmandu-aware ranking
 - multi-station PM2.5 consensus from several fresh valid stations
 - Open-Meteo wind context and 48h wind trail
-- NASA FIRMS hotspot integration for agricultural-burning evidence
+- NASA FIRMS hotspot integration for upwind fire activity evidence
 - deterministic attribution engine with:
   - source corridor weighting
   - 24-48h trajectory-lite transport signals
@@ -38,7 +38,7 @@ FIRMS_MAP_KEY=...
 Notes:
 
 - `OPENAQ_API_KEY` is required for live PM2.5 data.
-- `FIRMS_MAP_KEY` is optional but recommended. When present, FIRMS hotspots influence agricultural-burning attribution.
+- `FIRMS_MAP_KEY` is optional but recommended. When present, FIRMS hotspots influence upwind fire-activity attribution.
 - `OPEN_METEO_BASE_URL` is optional and defaults to `https://api.open-meteo.com`.
 
 ## Local Development
@@ -97,7 +97,7 @@ It uses:
 - recent wind trajectory consistency
 - PM2.5 persistence and spike behavior
 - seasonal priors
-- FIRMS fire hotspot density and FRP
+- FIRMS fire hotspot density, FRP, and hotspot geometry
 
 Confidence is based on:
 

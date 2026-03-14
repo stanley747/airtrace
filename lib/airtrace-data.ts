@@ -16,7 +16,10 @@ export type CitySnapshot = {
   city: string;
   country: string;
   updatedAt: string;
+  generatedAt: string;
   pm25: number;
+  aqi: number;
+  aqiCategory: string;
   category: string;
   importedShare: number;
   localShare: number;
@@ -104,6 +107,9 @@ type FireSignal = {
   hotspotCount: number;
   hotspotDensity: number;
   meanFrp: number;
+  cropBeltHotspotCount: number;
+  inferredSourceName: string;
+  inferredEvidenceLabel: string;
 };
 
 const PM25_PARAMETER_ID = 2;
@@ -114,6 +120,12 @@ const MAX_MEASUREMENT_AGE_HOURS = 24;
 const FIRMS_BASE_URL = "https://firms.modaps.eosdis.nasa.gov/api/area/csv";
 const FIRMS_SOURCE = "VIIRS_SNPP_NRT";
 const FIRMS_UPWIND_BBOX = "80,24,89,31";
+const NORTH_INDIA_CROP_BELT_BBOX = {
+  minLat: 27.2,
+  maxLat: 31.4,
+  minLng: 74.0,
+  maxLng: 78.8
+};
 
 const kathmandu = {
   city: "Kathmandu",
@@ -132,6 +144,38 @@ function getCategory(pm25: number) {
   if (pm25 <= 150.4) return "Very Unhealthy";
   if (pm25 <= 250.4) return "Hazardous";
   return "Severe";
+}
+
+function getAqiFromPm25(pm25: number) {
+  const breakpoints = [
+    { cLow: 0, cHigh: 12, iLow: 0, iHigh: 50 },
+    { cLow: 12.1, cHigh: 35.4, iLow: 51, iHigh: 100 },
+    { cLow: 35.5, cHigh: 55.4, iLow: 101, iHigh: 150 },
+    { cLow: 55.5, cHigh: 150.4, iLow: 151, iHigh: 200 },
+    { cLow: 150.5, cHigh: 250.4, iLow: 201, iHigh: 300 },
+    { cLow: 250.5, cHigh: 350.4, iLow: 301, iHigh: 400 },
+    { cLow: 350.5, cHigh: 500.4, iLow: 401, iHigh: 500 }
+  ];
+  const truncated = Math.floor(pm25 * 10) / 10;
+  const range =
+    breakpoints.find(
+      (breakpoint) => truncated >= breakpoint.cLow && truncated <= breakpoint.cHigh
+    ) ?? breakpoints[breakpoints.length - 1];
+
+  return Math.round(
+    ((range.iHigh - range.iLow) / (range.cHigh - range.cLow)) *
+      (truncated - range.cLow) +
+      range.iLow
+  );
+}
+
+function getAqiCategory(aqi: number) {
+  if (aqi <= 50) return "Good";
+  if (aqi <= 100) return "Moderate";
+  if (aqi <= 150) return "USG";
+  if (aqi <= 200) return "Unhealthy";
+  if (aqi <= 300) return "Very Unhealthy";
+  return "Hazardous";
 }
 
 function directionFromDegrees(degrees: number) {
@@ -303,6 +347,19 @@ function scoreLocationQuality(location: OpenAQLocation) {
   };
 }
 
+function isWithinBounds(
+  lat: number,
+  lng: number,
+  bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }
+) {
+  return (
+    lat >= bounds.minLat &&
+    lat <= bounds.maxLat &&
+    lng >= bounds.minLng &&
+    lng <= bounds.maxLng
+  );
+}
+
 function buildRecentPm25Stats(
   hourlyMeasurements: OpenAQHourlyMeasurement[],
   measurementTimestamp: string
@@ -470,6 +527,11 @@ function getSeasonalPriors(measurementTimestamp: string) {
   };
 }
 
+function isLikelyCropBurningWindow(timestamp: string) {
+  const month = new Date(timestamp).getUTCMonth() + 1;
+  return month === 4 || month === 5 || month === 10 || month === 11;
+}
+
 function normalizeShares(scores: Array<Omit<SourceContribution, "share"> & { score: number }>) {
   const total = scores.reduce((sum, item) => sum + item.score, 0);
   const normalized = scores.map((item) => ({
@@ -531,8 +593,15 @@ function computeAttribution(input: {
   const fireSignal = input.fireSignal ?? {
     hotspotCount: 0,
     hotspotDensity: 0,
-    meanFrp: 0
+    meanFrp: 0,
+    cropBeltHotspotCount: 0,
+    inferredSourceName: "Upwind fire activity",
+    inferredEvidenceLabel: "No FIRMS hotspot evidence"
   };
+  const fireSourceBoost =
+    fireSignal.inferredSourceName === "Probable agricultural burning, northern India"
+      ? 1
+      : 0.35;
   const persistence = clamp(
     Math.max(pm25Stats.persistence, clamp(pm25Stats.avg24h / 95, 0, 1) * 0.8),
     0,
@@ -544,19 +613,19 @@ function computeAttribution(input: {
 
   const sources = normalizeShares([
     {
-      name: "Agricultural burning, northern India",
+      name: fireSignal.inferredSourceName,
       score:
         0.7 +
         (agriCorridor * 0.55 + trajectory.agriTransport * 0.45) * 1.3 +
         transportStrength * 0.55 +
         persistence * 0.35 +
         severity * 0.22 +
-        fireSignal.hotspotDensity * 0.95 +
-        clamp(fireSignal.meanFrp / 40, 0, 1) * 0.22 +
+        fireSignal.hotspotDensity * 0.95 * fireSourceBoost +
+        clamp(fireSignal.meanFrp / 40, 0, 1) * 0.22 * fireSourceBoost +
         seasonalPriors.agricultural,
       evidence:
         fireSignal.hotspotCount > 0
-          ? `${fireSignal.hotspotCount} recent FIRMS hotspots upwind with ${input.windDirection} transport`
+          ? `${fireSignal.inferredEvidenceLabel} with ${input.windDirection} transport`
           : `${input.windDirection} corridor with ${input.windSpeedKph} kph transport from upwind plains`
     },
     {
@@ -598,7 +667,8 @@ function computeAttribution(input: {
 
   const importedShare = sources
     .filter((source) =>
-      source.name === "Agricultural burning, northern India" ||
+      source.name === "Probable agricultural burning, northern India" ||
+      source.name === "Upwind fire activity" ||
       source.name === "Industrial belt across the Indo-Gangetic Plain"
     )
     .reduce((sum, source) => sum + source.share, 0);
@@ -946,35 +1016,70 @@ async function fetchFireSignal(): Promise<FireSignal | null> {
     return {
       hotspotCount: 0,
       hotspotDensity: 0,
-      meanFrp: 0
+      meanFrp: 0,
+      cropBeltHotspotCount: 0,
+      inferredSourceName: "Upwind fire activity",
+      inferredEvidenceLabel: "No FIRMS hotspot evidence"
     };
   }
 
   const headers = parseCsvLine(lines[0]).map((header) => header.trim().toLowerCase());
   const confidenceIndex = headers.indexOf("confidence");
   const frpIndex = headers.indexOf("frp");
+  const latIndex = headers.indexOf("latitude");
+  const lngIndex = headers.indexOf("longitude");
+  const dateIndex = headers.indexOf("acq_date");
   let hotspotCount = 0;
   let frpSum = 0;
+  let cropBeltHotspotCount = 0;
+  let latestDate = "";
 
   for (const line of lines.slice(1)) {
     const values = parseCsvLine(line);
     const confidence = confidenceIndex >= 0 ? values[confidenceIndex]?.toLowerCase() ?? "" : "";
     const frp = frpIndex >= 0 ? Number(values[frpIndex]) : 0;
+    const lat = latIndex >= 0 ? Number(values[latIndex]) : Number.NaN;
+    const lng = lngIndex >= 0 ? Number(values[lngIndex]) : Number.NaN;
+    const acqDate = dateIndex >= 0 ? values[dateIndex] ?? "" : "";
 
     if (confidence && confidence.startsWith("l")) {
       continue;
     }
 
     hotspotCount += 1;
+    if (acqDate && acqDate > latestDate) {
+      latestDate = acqDate;
+    }
     if (Number.isFinite(frp)) {
       frpSum += frp;
     }
+    if (
+      Number.isFinite(lat) &&
+      Number.isFinite(lng) &&
+      isWithinBounds(lat, lng, NORTH_INDIA_CROP_BELT_BBOX)
+    ) {
+      cropBeltHotspotCount += 1;
+    }
   }
+
+  const cropBeltDensity = clamp(cropBeltHotspotCount / 40, 0, 1);
+  const cropBurningWindow = latestDate
+    ? isLikelyCropBurningWindow(`${latestDate}T00:00:00Z`)
+    : false;
+  const probableAgriculturalBurning =
+    cropBurningWindow && cropBeltHotspotCount >= 10 && cropBeltDensity >= 0.2;
 
   return {
     hotspotCount,
     hotspotDensity: clamp(hotspotCount / 80, 0, 1),
-    meanFrp: hotspotCount > 0 ? frpSum / hotspotCount : 0
+    meanFrp: hotspotCount > 0 ? frpSum / hotspotCount : 0,
+    cropBeltHotspotCount,
+    inferredSourceName: probableAgriculturalBurning
+      ? "Probable agricultural burning, northern India"
+      : "Upwind fire activity",
+    inferredEvidenceLabel: probableAgriculturalBurning
+      ? `${cropBeltHotspotCount} FIRMS hotspots in crop-belt geometry`
+      : `${hotspotCount} FIRMS hotspots in the upwind corridor`
   };
 }
 
@@ -1107,12 +1212,15 @@ function buildSixHourFeed(
 export async function getSnapshot(): Promise<CitySnapshot> {
   noStore();
 
+  const generatedAt = new Date().toISOString();
   const [{ measurement, stationQuality, agreementScore, stationCount }, weather, fireSignal] = await Promise.all([
     fetchBestLatestPm25(),
     fetchWindData(),
     fetchFireSignal()
   ]);
   const pm25 = Math.round(measurement.value);
+  const aqi = getAqiFromPm25(measurement.value);
+  const aqiCategory = getAqiCategory(aqi);
   const category = getCategory(pm25);
   const windSpeedKph = Math.round(weather.current?.wind_speed_10m ?? 0);
   const windDirectionDegrees = weather.current?.wind_direction_10m ?? 0;
@@ -1146,7 +1254,10 @@ export async function getSnapshot(): Promise<CitySnapshot> {
     country: kathmandu.country,
     updatedAt:
       measurement.datetime?.utc ?? weather.current?.time ?? new Date().toISOString(),
+    generatedAt,
     pm25,
+    aqi,
+    aqiCategory,
     category,
     importedShare: attribution.importedShare,
     localShare: attribution.localShare,
