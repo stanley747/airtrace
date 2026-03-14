@@ -1,14 +1,11 @@
 import { AttributionMap } from "@/components/attribution-map";
-import { getSnapshot } from "@/lib/airtrace-data";
+import { AutoRefresh } from "@/components/auto-refresh";
+import { getSnapshot, SnapshotError } from "@/lib/airtrace-data";
 
 export const dynamic = "force-dynamic";
 
 function formatShare(value: number) {
   return `${value}%`;
-}
-
-function formatTimestamp(value: string) {
-  return new Date(value).toUTCString().replace(" GMT", " UTC");
 }
 
 function formatFeedTimestamp(value: string) {
@@ -25,12 +22,54 @@ type HomePageProps = {
 
 export default async function HomePage({ searchParams }: HomePageProps) {
   await searchParams;
-  const selectedCity = await getSnapshot();
-  const strongestSource = selectedCity.sources[0];
+  let selectedCity;
+  let errorMessage: string | null = null;
+  let errorLabel: string | null = null;
+
+  try {
+    selectedCity = await getSnapshot();
+  } catch (error) {
+    if (error instanceof SnapshotError) {
+      errorMessage = error.message;
+      errorLabel = error.causeLabel;
+    } else if (error instanceof Error) {
+      errorMessage = error.message;
+    } else {
+      errorMessage = "Unknown live data failure";
+    }
+  }
+
+  if (!selectedCity) {
+    return (
+      <main className="terminal-shell">
+        <AutoRefresh />
+        <section className="terminal-grid">
+          <header className="terminal-panel terminal-header">
+            <div className="header-brand">
+              <span className="terminal-tag">AIRTRACE // ATTRIBUTION TERMINAL</span>
+              <h1>NO LIVE DATA AVAILABLE</h1>
+              {errorLabel ? <p>{errorLabel}</p> : null}
+              {errorMessage ? <p>{errorMessage}</p> : null}
+            </div>
+            <div className="header-status">
+              <div className="status-block">
+                <span className="status-label">FEED</span>
+                <strong>OFFLINE</strong>
+              </div>
+            </div>
+          </header>
+        </section>
+      </main>
+    );
+  }
+
+  const sortedSources = [...selectedCity.sources].sort((a, b) => b.share - a.share);
+  const strongestSource = sortedSources[0];
   const strongestWind = selectedCity.windTrail[0];
 
   return (
     <main className="terminal-shell">
+      <AutoRefresh />
       <section className="terminal-grid">
         <header className="terminal-panel terminal-header">
           <div className="header-brand">
@@ -43,12 +82,27 @@ export default async function HomePage({ searchParams }: HomePageProps) {
               <strong>{selectedCity.dataMode === "live" ? "LIVE" : "FALLBACK"}</strong>
             </div>
             <div className="status-block">
-              <span className="status-label">UPDATED</span>
-              <strong>{formatTimestamp(selectedCity.updatedAt)}</strong>
-            </div>
-            <div className="status-block">
               <span className="status-label">CONFIDENCE</span>
               <strong>{selectedCity.confidence.toUpperCase()}</strong>
+            </div>
+            <div className="refresh-meta">
+              <span className="status-label">LAST UPDATED</span>
+              <strong>
+                {new Intl.DateTimeFormat("en-US", {
+                  timeZone: "Asia/Kathmandu",
+                  weekday: "short",
+                  day: "2-digit",
+                  month: "short",
+                  year: "numeric",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                  hour12: false
+                })
+                  .format(new Date(selectedCity.updatedAt))
+                  .replace(",", "")}{" "}
+                NPT
+              </strong>
             </div>
           </div>
         </header>
@@ -68,12 +122,12 @@ export default async function HomePage({ searchParams }: HomePageProps) {
           </article>
           <article className="terminal-panel metric-panel">
             <span className="panel-label">POLLUTION FROM OUTSIDE NEPAL</span>
-            <strong className="metric-number">{selectedCity.importedShare}</strong>
+            <strong className="metric-number">{formatShare(selectedCity.importedShare)}</strong>
             <span className="metric-sub">ESTIMATED SHARE OF CURRENT LOAD</span>
           </article>
           <article className="terminal-panel metric-panel">
             <span className="panel-label">POLLUTION FROM WITHIN NEPAL</span>
-            <strong className="metric-number">{selectedCity.localShare}</strong>
+            <strong className="metric-number">{formatShare(selectedCity.localShare)}</strong>
             <span className="metric-sub">ESTIMATED SHARE OF CURRENT LOAD</span>
           </article>
           <article className="terminal-panel metric-panel">
@@ -107,7 +161,7 @@ export default async function HomePage({ searchParams }: HomePageProps) {
             <span>SHARE</span>
           </div>
           <div className="table-list">
-            {selectedCity.sources.map((source) => (
+            {sortedSources.map((source) => (
               <div key={source.name} className="table-row">
                 <div className="table-main">
                   <strong>{source.name}</strong>
@@ -169,35 +223,13 @@ export default async function HomePage({ searchParams }: HomePageProps) {
               <div className="note-item">
                 <span className="note-label">PROVENANCE</span>
                 <p>
-                  OpenAQ readings + Open-Meteo wind vectors +{" "}
-                  {selectedCity.interpretationMode === "ai"
-                    ? "OpenAI-generated attribution layer."
-                    : "heuristic attribution layer."}
+                  OpenAQ readings + Open-Meteo wind vectors + NASA FIRMS hotspot
+                  evidence + deterministic attribution layer.
                 </p>
               </div>
               <div className="note-item">
                 <span className="note-label">SCOPE</span>
                 <p>Single-city tracking is active for Kathmandu, Nepal.</p>
-              </div>
-            </div>
-
-            <div className="feed-block">
-              <div className="panel-head panel-head-inline">
-                <span className="panel-label">SIX-HOUR FEED</span>
-                <span className="panel-value">ROLLING HISTORY</span>
-              </div>
-              <div className="feed-list">
-                {selectedCity.feed.map((entry) => (
-                  <div key={entry.timestamp} className="feed-row">
-                    <div className="feed-meta">
-                      <strong>{formatFeedTimestamp(entry.timestamp)}</strong>
-                      <span>
-                        PM2.5 {entry.pm25} // IMP {entry.importedShare}% // LOC {entry.localShare}% // {entry.windDirection} {entry.windSpeedKph} KPH
-                      </span>
-                    </div>
-                    <p>{entry.headline}</p>
-                  </div>
-                ))}
               </div>
             </div>
           </div>

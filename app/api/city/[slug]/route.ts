@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSnapshot } from "@/lib/airtrace-data";
+import { getSnapshot, SnapshotError } from "@/lib/airtrace-data";
 
 type RouteContext = {
   params: Promise<{
@@ -17,9 +17,31 @@ export async function GET(_: Request, { params }: RouteContext) {
     );
   }
 
-  return NextResponse.json({
-    city: await getSnapshot(),
-    generatedAt: new Date().toISOString(),
-    mode: "live-or-fallback-ai"
-  });
+  try {
+    const city = await getSnapshot();
+
+    return NextResponse.json({
+      city,
+      generatedAt: new Date().toISOString(),
+      mode: "live-only"
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Unknown live data failure";
+    const cause =
+      error instanceof SnapshotError ? error.causeLabel : "unknown";
+
+    return NextResponse.json(
+      {
+        city: null,
+        generatedAt: new Date().toISOString(),
+        mode: "live-only",
+        error: {
+          cause,
+          message
+        }
+      },
+      { status: 503 }
+    );
+  }
 }
