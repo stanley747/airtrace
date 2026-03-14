@@ -19,46 +19,11 @@ type AttributionMapProps = {
 };
 
 type SourceRegion = {
-  center: LatLngExpression;
-  label: string;
+  center: [number, number];
   radius: number;
+  label: string;
+  color: string;
 };
-
-function getSourceRegion(sourceName: string): SourceRegion | null {
-  if (sourceName === "Kathmandu traffic and brick kilns") {
-    return {
-      center: [27.7172, 85.324],
-      label: sourceName,
-      radius: 18000
-    };
-  }
-
-  if (sourceName === "Upwind fire activity" || sourceName === "Probable agricultural burning, northern India") {
-    return {
-      center: [27.1, 83.6],
-      label: sourceName,
-      radius: 42000
-    };
-  }
-
-  if (sourceName === "Industrial belt across the Indo-Gangetic Plain") {
-    return {
-      center: [27.9, 84.25],
-      label: sourceName,
-      radius: 36000
-    };
-  }
-
-  if (sourceName === "Dust resuspension") {
-    return {
-      center: [27.42, 84.55],
-      label: sourceName,
-      radius: 26000
-    };
-  }
-
-  return null;
-}
 
 function getShareColor(share: number) {
   if (share >= 40) return "#cf4b3c";
@@ -76,23 +41,21 @@ const cityIcon = new DivIcon({
 
 export function AttributionMapClient({ city }: AttributionMapProps) {
   const center: LatLngExpression = [city.coordinates.lat, city.coordinates.lng];
-  const sourceRegions = [...city.sources]
+  const sourceRegions: SourceRegion[] = [...city.sources]
     .sort((a, b) => b.share - a.share)
     .map((source) => {
-      const region = getSourceRegion(source.name);
-
-      if (!region) {
+      if (!source.overlay) {
         return null;
       }
 
       return {
-        ...region,
-        radius: Math.round(region.radius * (0.72 + source.share / 100)),
+        center: source.overlay.center,
+        radius: Math.round(source.overlay.radius * (0.72 + source.share / 100)),
         label: `${source.name} (${source.share}%)`,
         color: getShareColor(source.share)
       };
     })
-    .filter((region): region is SourceRegion & { color: string } => region !== null);
+    .filter((region): region is SourceRegion => region !== null);
   const corridorPath: LatLngExpression[] = sourceRegions.map((region) => region.center);
   corridorPath.push(center);
 

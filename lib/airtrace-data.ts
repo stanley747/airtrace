@@ -4,6 +4,10 @@ export type SourceContribution = {
   name: string;
   share: number;
   evidence: string;
+  overlay?: {
+    center: [number, number];
+    radius: number;
+  };
 };
 
 export type WindPoint = {
@@ -110,6 +114,17 @@ type FireSignal = {
   cropBeltHotspotCount: number;
   inferredSourceName: string;
   inferredEvidenceLabel: string;
+};
+
+type ContributorCandidate = {
+  name: string;
+  evidence: string;
+  score: number;
+  imported: boolean;
+  overlay: {
+    center: [number, number];
+    radius: number;
+  };
 };
 
 const PM25_PARAMETER_ID = 2;
@@ -314,6 +329,27 @@ function haversineKm(
       Math.sin(dLng / 2) ** 2;
 
   return 2 * earthRadiusKm * Math.asin(Math.sqrt(a));
+}
+
+function projectFromKathmandu(bearingDegrees: number, distanceKm: number): [number, number] {
+  const earthRadiusKm = 6371;
+  const bearing = toRadians(bearingDegrees);
+  const lat1 = toRadians(kathmandu.coordinates.lat);
+  const lng1 = toRadians(kathmandu.coordinates.lng);
+  const angularDistance = distanceKm / earthRadiusKm;
+
+  const lat2 = Math.asin(
+    Math.sin(lat1) * Math.cos(angularDistance) +
+      Math.cos(lat1) * Math.sin(angularDistance) * Math.cos(bearing)
+  );
+  const lng2 =
+    lng1 +
+    Math.atan2(
+      Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(lat1),
+      Math.cos(angularDistance) - Math.sin(lat1) * Math.sin(lat2)
+    );
+
+  return [lat2 * (180 / Math.PI), lng2 * (180 / Math.PI)];
 }
 
 function corridorStrength(directionDegrees: number, center: number, spread: number) {
@@ -532,12 +568,14 @@ function isLikelyCropBurningWindow(timestamp: string) {
   return month === 4 || month === 5 || month === 10 || month === 11;
 }
 
-function normalizeShares(scores: Array<Omit<SourceContribution, "share"> & { score: number }>) {
-  const total = scores.reduce((sum, item) => sum + item.score, 0);
-  const normalized = scores.map((item) => ({
+function normalizeContributors(candidates: ContributorCandidate[]) {
+  const total = candidates.reduce((sum, item) => sum + item.score, 0);
+  const normalized = candidates.map((item) => ({
     name: item.name,
     evidence: item.evidence,
-    share: total > 0 ? Math.round((item.score / total) * 100) : 25
+    imported: item.imported,
+    overlay: item.overlay,
+    share: total > 0 ? Math.round((item.score / total) * 100) : Math.round(100 / candidates.length)
   }));
   const roundedTotal = normalized.reduce((sum, item) => sum + item.share, 0);
 
@@ -610,67 +648,109 @@ function computeAttribution(input: {
   const localSpike = pm25Stats.spikeFactor;
   const dustPotential =
     clamp((input.windSpeedKph - 10) / 16, 0, 1) * 0.8 + (1 - persistence) * 0.2;
+  const localScore =
+    0.72 +
+    stagnation * 1.1 +
+    (localShelterFlow * 0.45 + trajectory.localRetention * 0.35) +
+    severity * 0.4 +
+    localSpike * 0.55 +
+    seasonalPriors.local;
+  const fireScore =
+    0.4 +
+    (agriCorridor * 0.55 + trajectory.agriTransport * 0.45) * 1.15 +
+    transportStrength * 0.42 +
+    persistence * 0.28 +
+    severity * 0.18 +
+    fireSignal.hotspotDensity * 0.95 * fireSourceBoost +
+    clamp(fireSignal.meanFrp / 40, 0, 1) * 0.22 * fireSourceBoost +
+    seasonalPriors.agricultural;
+  const transportScore =
+    0.45 +
+    (industrialCorridor * 0.52 + trajectory.industrialTransport * 0.48) * 1.08 +
+    transportStrength * 0.45 +
+    persistence * 0.5 +
+    severity * 0.28 +
+    seasonalPriors.industrial;
+  const dustScore =
+    0.25 +
+    (dustPotential * 0.65 + trajectory.dustTransport * 0.35) * 1.05 +
+    severity * 0.16 +
+    transportStrength * 0.18 +
+    seasonalPriors.dust;
+  const contributors: ContributorCandidate[] = [];
 
-  const sources = normalizeShares([
-    {
-      name: fireSignal.inferredSourceName,
-      score:
-        0.7 +
-        (agriCorridor * 0.55 + trajectory.agriTransport * 0.45) * 1.3 +
-        transportStrength * 0.55 +
-        persistence * 0.35 +
-        severity * 0.22 +
-        fireSignal.hotspotDensity * 0.95 * fireSourceBoost +
-        clamp(fireSignal.meanFrp / 40, 0, 1) * 0.22 * fireSourceBoost +
-        seasonalPriors.agricultural,
-      evidence:
-        fireSignal.hotspotCount > 0
-          ? `${fireSignal.inferredEvidenceLabel} with ${input.windDirection} transport`
-          : `${input.windDirection} corridor with ${input.windSpeedKph} kph transport from upwind plains`
-    },
-    {
-      name: "Industrial belt across the Indo-Gangetic Plain",
-      score:
-        0.78 +
-        (industrialCorridor * 0.52 + trajectory.industrialTransport * 0.48) * 1.18 +
-        transportStrength * 0.45 +
-        persistence * 0.5 +
-        severity * 0.28 +
-        seasonalPriors.industrial,
-      evidence: `${Math.round(pm25Stats.avg12h || input.pm25)} ug/m3 recent mean with sustained regional haze transport`
-    },
-    {
-      name: "Kathmandu traffic and brick kilns",
-      score:
-        0.92 +
-        stagnation * 1.1 +
-        (localShelterFlow * 0.45 + trajectory.localRetention * 0.35) +
-        severity * 0.4 +
-        localSpike * 0.55 +
-        seasonalPriors.local,
-      evidence:
-        input.windSpeedKph < 10
-          ? "Lighter valley winds favor local build-up from traffic and kilns"
-          : "Mixed local emissions remain material inside the valley basin"
-    },
-    {
-      name: "Dust resuspension",
-      score:
-        0.4 +
-        (dustPotential * 0.65 + trajectory.dustTransport * 0.35) * 1.05 +
-        severity * 0.16 +
-        transportStrength * 0.18 +
-        seasonalPriors.dust,
-      evidence: `${input.windSpeedKph} kph surface winds support some particulate resuspension`
+  contributors.push({
+    name:
+      localSpike >= 0.28
+        ? "Kathmandu valley accumulation"
+        : input.windSpeedKph < 10
+          ? "Kathmandu local emissions build-up"
+          : "Kathmandu local emissions",
+    evidence:
+      input.windSpeedKph < 10
+        ? "Lighter valley winds favor local build-up from urban and kiln emissions"
+        : "Local emissions remain material inside the valley basin",
+    score: localScore,
+    imported: false,
+    overlay: {
+      center: [kathmandu.coordinates.lat, kathmandu.coordinates.lng],
+      radius: 18000
     }
-  ]);
+  });
+
+  if (fireSignal.hotspotCount > 0 && fireScore >= 0.35) {
+    contributors.push({
+      name:
+        fireSignal.inferredSourceName === "Probable agricultural burning, northern India"
+          ? `${input.windDirection} crop-belt fire corridor`
+          : `${input.windDirection} upwind hotspot corridor`,
+      evidence: `${fireSignal.inferredEvidenceLabel} with ${input.windDirection} transport`,
+      score: fireScore,
+      imported: true,
+      overlay: {
+        center: projectFromKathmandu(input.windDirectionDegrees, 170),
+        radius: 42000
+      }
+    });
+  }
+
+  if (transportScore >= 0.4) {
+    contributors.push({
+      name: `${input.windDirection} regional haze transport`,
+      evidence: `${Math.round(pm25Stats.avg12h || input.pm25)} ug/m3 recent mean with sustained upwind transport`,
+      score: transportScore,
+      imported: true,
+      overlay: {
+        center: projectFromKathmandu(input.windDirectionDegrees, 110),
+        radius: 34000
+      }
+    });
+  }
+
+  if (dustScore >= 0.28 || input.windSpeedKph >= 11) {
+    contributors.push({
+      name:
+        input.windSpeedKph >= 11
+          ? `${input.windDirection} wind-driven dust`
+          : "Surface dust resuspension",
+      evidence: `${input.windSpeedKph} kph surface winds support particulate lift and resuspension`,
+      score: dustScore,
+      imported: input.windSpeedKph >= 11,
+      overlay: {
+        center: projectFromKathmandu(input.windDirectionDegrees, input.windSpeedKph >= 11 ? 70 : 35),
+        radius: 24000
+      }
+    });
+  }
+
+  const sources = normalizeContributors(
+    contributors
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 4)
+  );
 
   const importedShare = sources
-    .filter((source) =>
-      source.name === "Probable agricultural burning, northern India" ||
-      source.name === "Upwind fire activity" ||
-      source.name === "Industrial belt across the Indo-Gangetic Plain"
-    )
+    .filter((source) => source.imported)
     .reduce((sum, source) => sum + source.share, 0);
   const localShare = 100 - importedShare;
   const topShare = sources[0]?.share ?? 0;
@@ -705,7 +785,7 @@ function computeAttribution(input: {
     importedShare,
     localShare,
     confidence,
-    sources
+    sources: sources.map(({ imported: _imported, ...source }) => source)
   };
 }
 
