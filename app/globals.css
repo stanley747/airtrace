@@ -648,6 +648,15 @@ strong {
   .leaflet-canvas {
     min-height: 460px;
   }
+
+  .header-status {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .refresh-meta {
+    flex-wrap: wrap;
+  }
 }
 
 @media (max-width: 760px) {
@@ -699,6 +708,19 @@ strong {
     width: 100%;
   }
 
+  .refresh-meta {
+    align-items: flex-start;
+    justify-content: space-between;
+    width: 100%;
+    white-space: normal;
+    gap: 6px;
+  }
+
+  .refresh-meta strong {
+    font-size: 0.8rem;
+    line-height: 1.4;
+  }
+
   .refresh-controls {
     flex-direction: column;
     align-items: stretch;
@@ -712,8 +734,10 @@ strong {
   }
 
   .ticker-panel {
+    flex-direction: column;
     align-items: flex-start;
-    padding: 8px 10px;
+    gap: 6px;
+    padding: 10px 12px;
   }
 
   .ticker-text {
@@ -726,7 +750,7 @@ strong {
   .source-panel,
   .wind-panel,
   .evidence-panel {
-    padding: 8px;
+    padding: 10px;
   }
 
   .metric-number {
@@ -764,13 +788,13 @@ strong {
   }
 
   .map-panel {
-    min-height: 360px;
+    min-height: 320px;
   }
 
   .terminal-map,
   .leaflet-shell,
   .leaflet-canvas {
-    min-height: 300px;
+    min-height: 260px;
   }
 
   .feed-row p,
@@ -782,9 +806,21 @@ strong {
   .ticker-text {
     white-space: normal;
   }
+
+  .table-main strong {
+    font-size: 0.92rem;
+  }
 }
 
 @media (max-width: 520px) {
+  .terminal-shell {
+    padding: 4px;
+  }
+
+  .terminal-grid {
+    gap: 4px;
+  }
+
   .metric-strip {
     grid-template-columns: 1fr;
   }
@@ -808,5 +844,55 @@ strong {
 
   .header-brand h1 {
     font-size: 0.76rem;
+  }
+
+  .terminal-header {
+    padding: 8px;
+  }
+
+  .ticker-panel {
+    padding: 10px;
+  }
+
+  .ticker-text {
+    font-size: 0.74rem;
+  }
+
+  .metric-panel,
+  .map-panel,
+  .source-panel,
+  .wind-panel,
+  .evidence-panel {
+    padding: 8px;
+  }
+
+  .table-row {
+    gap: 6px;
+  }
+
+  .table-side {
+    gap: 12px;
+  }
+
+  .terminal-bar {
+    flex: 1;
+    max-width: 112px;
+  }
+
+  .matrix-head,
+  .matrix-row {
+    grid-template-columns: 64px 40px 64px;
+    gap: 6px;
+    font-size: 0.66rem;
+  }
+
+  .map-panel {
+    min-height: 280px;
+  }
+
+  .terminal-map,
+  .leaflet-shell,
+  .leaflet-canvas {
+    min-height: 220px;
   }
 }
