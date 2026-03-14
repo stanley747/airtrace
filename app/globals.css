@@ -665,7 +665,40 @@ strong {
   }
 
   .terminal-grid {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .terminal-grid {
     gap: 6px;
+  }
+
+  .terminal-header {
+    order: 1;
+  }
+
+  .metric-strip {
+    order: 2;
+  }
+
+  .ticker-panel {
+    order: 3;
+  }
+
+  .source-panel {
+    order: 4;
+  }
+
+  .evidence-panel {
+    order: 5;
+  }
+
+  .wind-panel {
+    order: 6;
+  }
+
+  .map-panel {
+    order: 7;
   }
 
   .metric-strip {
