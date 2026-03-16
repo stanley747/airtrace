@@ -167,7 +167,7 @@ export default async function HomePage({ searchParams }: HomePageProps) {
   const sortedSources = [...selectedCity.sources].sort((a, b) => b.share - a.share);
   const strongestSource = sortedSources[0];
   const strongestWind = selectedCity.windTrail[0];
-  const trend = await getHistoricalTrend(30);
+  const trend = await getHistoricalTrend(30, selectedCity.stationSummary);
   const hasTrendHistory = trend.length > 0;
   const topStations = selectedCity.stationEvidence.slice(0, 4);
   const confidenceRows = [
@@ -487,6 +487,8 @@ export default async function HomePage({ searchParams }: HomePageProps) {
               <div className="panel-card panel-card-wide">
                 <TimelinePlayer
                   key={selectedCity.generatedAt}
+                  cityName={selectedCity.city}
+                  coordinates={selectedCity.coordinates}
                   frames={selectedCity.timeline24h}
                 />
               </div>

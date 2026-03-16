@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import type { TimelineFrame } from "@/lib/airtrace-data";
+import { TimelinePlaybackMap } from "@/components/timeline-playback-map";
 
 const FRAME_INTERVAL_MS = 850;
 
@@ -20,10 +21,15 @@ function formatFrameTime(value: string) {
 }
 
 type TimelinePlayerProps = {
+  cityName: string;
+  coordinates: {
+    lat: number;
+    lng: number;
+  };
   frames: TimelineFrame[];
 };
 
-export function TimelinePlayer({ frames }: TimelinePlayerProps) {
+export function TimelinePlayer({ cityName, coordinates, frames }: TimelinePlayerProps) {
   const [activeIndex, setActiveIndex] = useState(() =>
     frames.length > 0 ? frames.length - 1 : 0
   );
@@ -90,6 +96,17 @@ export function TimelinePlayer({ frames }: TimelinePlayerProps) {
 
   return (
     <div className="timeline-player">
+      <TimelinePlaybackMap
+        cityName={cityName}
+        coordinates={coordinates}
+        frames={frames}
+        activeIndex={safeActiveIndex}
+        isPlaying={isPlaying}
+        onTogglePlayback={() => {
+          setIsPlaying((current) => !current);
+        }}
+      />
+
       <div className="timeline-head">
         <span className="note-label">24H PLAYBACK</span>
         <span className="timeline-range">
@@ -99,15 +116,6 @@ export function TimelinePlayer({ frames }: TimelinePlayerProps) {
       </div>
 
       <div className="timeline-controls">
-        <button
-          type="button"
-          className="timeline-play"
-          onClick={() => {
-            setIsPlaying((current) => !current);
-          }}
-        >
-          {isPlaying ? "Pause" : "Play"}
-        </button>
         <div className="timeline-active">
           <strong>{formatFrameTime(activeFrame.timestamp)}</strong>
           <span>

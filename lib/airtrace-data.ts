@@ -14,10 +14,32 @@ export type SourceContribution = {
   name: string;
   share: number;
   evidence: string;
-  overlay?: {
-    center: [number, number];
-    radius: number;
-  };
+};
+
+export type MapEvidencePoint = {
+  lat: number;
+  lng: number;
+  label: string;
+  kind:
+    | "station"
+    | "hotspot"
+    | "cropland-hotspot"
+    | "kiln"
+    | "industrial";
+  weight?: number;
+};
+
+export type MapEvidenceLine = {
+  label: string;
+  kind: "trajectory";
+  points: [number, number][];
+};
+
+export type MapEvidence = {
+  stations: MapEvidencePoint[];
+  hotspots: MapEvidencePoint[];
+  registry: MapEvidencePoint[];
+  lines: MapEvidenceLine[];
 };
 
 export type WindPoint = {
@@ -37,6 +59,7 @@ export type TimelineFrame = {
   dominantSource: string;
   windDirection: string;
   windSpeedKph: number;
+  transportPath: [number, number][];
 };
 
 export type TrajectoryEvidence = {
@@ -44,6 +67,7 @@ export type TrajectoryEvidence = {
   available: boolean;
   originBearing: number | null;
   originDistanceKm: number | null;
+  pathPoints: [number, number][];
   agriTransport: number;
   industrialTransport: number;
   localRetention: number;
@@ -61,13 +85,23 @@ export type ModelEvidence = {
 
 export type StationEvidence = {
   locationId: number;
+  sensorId: number | null;
   label: string;
   pm25: number;
   updatedAt: string;
+  latitude: number | null;
+  longitude: number | null;
   distanceKm: number;
   stationQuality: number;
   weight: number;
   freshnessHours: number;
+};
+
+export type StationSummary = {
+  primarySensorId: number | null;
+  stationQuality: number;
+  agreementScore: number;
+  stationCount: number;
 };
 
 export type ConfidenceBreakdown = {
@@ -88,6 +122,19 @@ export type FireEvidence = {
   croplandMatchCount: number;
   inferredSourceName: string;
   inferredEvidenceLabel: string;
+  hotspots: Array<{
+    lat: number;
+    lng: number;
+    frp: number;
+    date: string;
+    nearCropland: boolean | null;
+  }>;
+};
+
+export type RegistryMatch = {
+  lat: number;
+  lng: number;
+  label: string;
 };
 
 export type RegistryEvidence = {
@@ -96,6 +143,10 @@ export type RegistryEvidence = {
   localIndustrialCount: number;
   upwindIndustrialCount: number;
   upwindKilnCount: number;
+  localKilns: RegistryMatch[];
+  localIndustrialSites: RegistryMatch[];
+  upwindIndustrialSites: RegistryMatch[];
+  upwindKilns: RegistryMatch[];
 };
 
 export type CitySnapshot = {
@@ -122,9 +173,11 @@ export type CitySnapshot = {
   trajectoryEvidence: TrajectoryEvidence;
   registryEvidence: RegistryEvidence;
   stationEvidence: StationEvidence[];
+  stationSummary: StationSummary;
   modelEvidence: ModelEvidence;
   confidenceBreakdown: ConfidenceBreakdown;
   fireEvidence: FireEvidence;
+  mapEvidence: MapEvidence;
   dataMode: "live";
   interpretationMode: "heuristic";
 };
@@ -258,6 +311,7 @@ type FireHotspot = {
   lng: number;
   frp: number;
   date: string;
+  nearCropland?: boolean | null;
 };
 
 type RegistryEvidenceInternal = RegistryEvidence & {
@@ -278,10 +332,6 @@ type ContributorCandidate = {
   evidence: string;
   score: number;
   imported: boolean;
-  overlay: {
-    center: [number, number];
-    radius: number;
-  };
 };
 
 export type HistoricalTrendEntry = {
@@ -306,12 +356,15 @@ const OPEN_METEO_AIR_QUALITY_BASE_URL =
 const HYSPLIT_BASE_URL =
   process.env.HYSPLIT_BASE_URL ?? "https://apps.arl.noaa.gov/ready2";
 const MAX_MEASUREMENT_AGE_HOURS = 24;
+const OPENAQ_LOCATION_CACHE_TTL_HOURS = 24;
 const FIRMS_BASE_URL = "https://firms.modaps.eosdis.nasa.gov/api/area/csv";
 const FIRMS_SOURCE = "VIIRS_SNPP_NRT";
 const OVERPASS_API_URL = "https://overpass-api.de/api/interpreter";
 const FIRMS_UPWIND_BBOX = "80,24,89,31";
 const CROPLAND_PROXIMITY_METERS = 750;
 const MAX_CROPLAND_HOTSPOT_SAMPLES = 12;
+const MAX_HOTSPOTS_FOR_MAP = 80;
+const MAX_REGISTRY_POINTS = 24;
 const CROPLAND_CACHE_TTL_HOURS = 24 * 14;
 const SIGNAL_CACHE_TTL_HOURS = 24 * 7;
 const HISTORICAL_TREND_CACHE_TTL_HOURS = 6;
@@ -678,11 +731,16 @@ function bearingDegrees(
   return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
 
-function projectFromKathmandu(bearingDegrees: number, distanceKm: number): [number, number] {
+function projectPoint(
+  originLat: number,
+  originLng: number,
+  bearingDegrees: number,
+  distanceKm: number
+): [number, number] {
   const earthRadiusKm = 6371;
   const bearing = toRadians(bearingDegrees);
-  const lat1 = toRadians(kathmandu.coordinates.lat);
-  const lng1 = toRadians(kathmandu.coordinates.lng);
+  const lat1 = toRadians(originLat);
+  const lng1 = toRadians(originLng);
   const angularDistance = distanceKm / earthRadiusKm;
 
   const lat2 = Math.asin(
@@ -697,6 +755,15 @@ function projectFromKathmandu(bearingDegrees: number, distanceKm: number): [numb
     );
 
   return [lat2 * (180 / Math.PI), lng2 * (180 / Math.PI)];
+}
+
+function projectFromKathmandu(bearingDegrees: number, distanceKm: number): [number, number] {
+  return projectPoint(
+    kathmandu.coordinates.lat,
+    kathmandu.coordinates.lng,
+    bearingDegrees,
+    distanceKm
+  );
 }
 
 function corridorStrength(directionDegrees: number, center: number, spread: number) {
@@ -872,6 +939,44 @@ function buildTrajectorySignals(weather: OpenMeteoResponse, measurementTimestamp
   };
 }
 
+function buildWindTrajectoryPath(weather: OpenMeteoResponse, measurementTimestamp: string) {
+  const measurementTime = new Date(measurementTimestamp).getTime();
+  const times = weather.hourly?.time ?? [];
+  const speeds = weather.hourly?.wind_speed_10m ?? [];
+  const directions = weather.hourly?.wind_direction_10m ?? [];
+  const segments = times
+    .map((time, index) => ({
+      time: new Date(time).getTime(),
+      direction: directions[index],
+      speed: speeds[index]
+    }))
+    .filter(
+      (point): point is { time: number; direction: number; speed: number } =>
+        Number.isFinite(point.time) &&
+        typeof point.direction === "number" &&
+        typeof point.speed === "number" &&
+        point.time <= measurementTime &&
+        measurementTime - point.time <= 24 * 60 * 60 * 1000
+    )
+    .sort((a, b) => b.time - a.time)
+    .slice(0, 12);
+
+  if (segments.length === 0) {
+    return [] as [number, number][];
+  }
+
+  let cursor: [number, number] = [kathmandu.coordinates.lat, kathmandu.coordinates.lng];
+  const points: [number, number][] = [cursor];
+
+  for (const segment of segments) {
+    const stepDistanceKm = clamp(segment.speed * 0.7, 4, 18);
+    cursor = projectPoint(cursor[0], cursor[1], segment.direction, stepDistanceKm);
+    points.push(cursor);
+  }
+
+  return points.reverse();
+}
+
 function getSeasonalPriors(measurementTimestamp: string) {
   const month = new Date(measurementTimestamp).getUTCMonth() + 1;
 
@@ -921,7 +1026,6 @@ function normalizeContributors(candidates: ContributorCandidate[]) {
     name: item.name,
     evidence: item.evidence,
     imported: item.imported,
-    overlay: item.overlay,
     share: total > 0 ? Math.round((item.score / total) * 100) : Math.round(100 / candidates.length)
   }));
   const roundedTotal = normalized.reduce((sum, item) => sum + item.share, 0);
@@ -981,6 +1085,7 @@ function computeAttribution(input: {
           available: true,
           originBearing: null,
           originDistanceKm: null,
+          pathPoints: [],
           ...buildTrajectorySignals(input.weather, input.measurementTimestamp)
         };
   const seasonalPriors = getSeasonalPriors(input.measurementTimestamp);
@@ -992,7 +1097,11 @@ function computeAttribution(input: {
     localKilnCount: 0,
     localIndustrialCount: 0,
     upwindIndustrialCount: 0,
-    upwindKilnCount: 0
+    upwindKilnCount: 0,
+    localKilns: [],
+    localIndustrialSites: [],
+    upwindIndustrialSites: [],
+    upwindKilns: []
   };
   const modelEvidence = input.modelEvidence ?? {
     modeledPm25: null,
@@ -1009,7 +1118,8 @@ function computeAttribution(input: {
     cropBeltHotspotCount: 0,
     croplandMatchCount: 0,
     inferredSourceName: "Upwind fire activity",
-    inferredEvidenceLabel: "No FIRMS hotspot evidence"
+    inferredEvidenceLabel: "No FIRMS hotspot evidence",
+    hotspots: []
   };
   const fireSourceBoost =
     fireSignal.inferredSourceName === "Probable agricultural burning, northern India"
@@ -1090,11 +1200,7 @@ function computeAttribution(input: {
           : "Lighter valley winds favor local build-up from urban and kiln emissions"
         : "Local emissions remain material inside the valley basin",
     score: localScore,
-    imported: false,
-    overlay: {
-      center: [kathmandu.coordinates.lat, kathmandu.coordinates.lng],
-      radius: 18000
-    }
+    imported: false
   });
 
   if (fireSignal.hotspotCount > 0 && fireScore >= 0.35) {
@@ -1105,11 +1211,7 @@ function computeAttribution(input: {
           : `${input.windDirection} upwind hotspot corridor`,
       evidence: `${fireSignal.inferredEvidenceLabel} with ${input.windDirection} transport`,
       score: fireScore,
-      imported: true,
-      overlay: {
-        center: projectFromKathmandu(input.windDirectionDegrees, 170),
-        radius: 42000
-      }
+      imported: true
     });
   }
 
@@ -1123,11 +1225,7 @@ function computeAttribution(input: {
             ? `${Math.round(pm25Stats.avg12h || input.pm25)} ug/m3 recent mean with elevated modeled aerosol loading`
             : `${Math.round(pm25Stats.avg12h || input.pm25)} ug/m3 recent mean with sustained upwind transport`,
       score: transportScore,
-      imported: true,
-      overlay: {
-        center: projectFromKathmandu(input.windDirectionDegrees, 110),
-        radius: 34000
-      }
+      imported: true
     });
   }
 
@@ -1142,11 +1240,7 @@ function computeAttribution(input: {
           ? `Modeled dust ${modelEvidence.modeledDust} ug/m3 aligns with surface resuspension risk`
           : `${input.windSpeedKph} kph surface winds support particulate lift and resuspension`,
       score: dustScore,
-      imported: input.windSpeedKph >= 11,
-      overlay: {
-        center: projectFromKathmandu(input.windDirectionDegrees, input.windSpeedKph >= 11 ? 70 : 35),
-        radius: 24000
-      }
+      imported: input.windSpeedKph >= 11
     });
   }
 
@@ -1247,6 +1341,19 @@ async function fetchJson<T>(url: string, init?: RequestInit) {
 
 async function fetchNearestPm25Location() {
   const apiKey = process.env.OPENAQ_API_KEY;
+  const cacheKey = "openaq:locations:np:pm25:v1";
+  const cached = getSignalCacheEntry(cacheKey);
+
+  if (cached && isSignalCacheFresh(cached.checkedAt, OPENAQ_LOCATION_CACHE_TTL_HOURS)) {
+    try {
+      const cachedLocations = JSON.parse(cached.payloadJson) as OpenAQLocation[];
+      if (Array.isArray(cachedLocations) && cachedLocations.length > 0) {
+        return cachedLocations;
+      }
+    } catch {
+      // Ignore malformed cache payloads and refetch.
+    }
+  }
 
   if (!apiKey) {
     throw new SnapshotError("OPENAQ_API_KEY is not set", "env:openaq");
@@ -1270,6 +1377,21 @@ async function fetchNearestPm25Location() {
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown OpenAQ locations failure";
+
+    if (
+      message.includes("429") &&
+      cached
+    ) {
+      try {
+        const cachedLocations = JSON.parse(cached.payloadJson) as OpenAQLocation[];
+        if (Array.isArray(cachedLocations) && cachedLocations.length > 0) {
+          return cachedLocations;
+        }
+      } catch {
+        // Ignore malformed cache payloads and rethrow the live failure.
+      }
+    }
+
     throw new SnapshotError(message, "openaq:locations");
   }
 
@@ -1284,6 +1406,13 @@ async function fetchNearestPm25Location() {
   if (locations.length === 0) {
     throw new SnapshotError("No OpenAQ locations found in Nepal", "openaq:locations-empty");
   }
+
+  setSignalCacheEntry({
+    cacheKey,
+    signalKind: "openaq:locations",
+    payloadJson: JSON.stringify(locations),
+    checkedAt: new Date().toISOString()
+  });
 
   return locations;
 }
@@ -1497,12 +1626,15 @@ async function fetchBestLatestPm25() {
       stationCount: weighted.length,
       stations: weighted.map((candidate) => ({
         locationId: candidate.location.id,
+        sensorId: candidate.measurement.sensorsId ?? null,
         label:
           candidate.location.locality ??
           candidate.location.name ??
           `Location ${candidate.location.id}`,
         pm25: Math.round(candidate.measurement.value),
         updatedAt: candidate.measurement.datetime?.utc ?? new Date().toISOString(),
+        latitude: candidate.location.coordinates?.latitude ?? null,
+        longitude: candidate.location.coordinates?.longitude ?? null,
         distanceKm: Math.round(candidate.distanceKm),
         stationQuality: Math.round(candidate.stationQuality * 100),
         weight: Math.round(candidate.weight * 100),
@@ -1690,14 +1822,21 @@ out ids 1;
   return Array.isArray(payload.elements) && payload.elements.length > 0;
 }
 
-async function countCroplandMatchedHotspots(hotspots: FireHotspot[]) {
+async function annotateCroplandMatchedHotspots(hotspots: FireHotspot[]) {
   if (hotspots.length === 0) {
-    return 0;
+    return {
+      matchCount: 0,
+      hotspots
+    };
   }
 
   const sampledHotspots = [...hotspots]
     .sort((a, b) => b.frp - a.frp)
     .slice(0, MAX_CROPLAND_HOTSPOT_SAMPLES);
+  const annotatedHotspots: FireHotspot[] = hotspots.map((hotspot) => ({
+    ...hotspot,
+    nearCropland: null
+  }));
   let matches = 0;
 
   for (const hotspot of sampledHotspots) {
@@ -1705,6 +1844,12 @@ async function countCroplandMatchedHotspots(hotspots: FireHotspot[]) {
     const cached = getCroplandCacheEntry(hotspotKey);
 
     if (cached && isCroplandCacheFresh(cached.checkedAt)) {
+      const nearCropland = cached.nearCropland === 1;
+      for (const candidate of annotatedHotspots) {
+        if (getHotspotCacheKey(candidate) === hotspotKey) {
+          candidate.nearCropland = nearCropland;
+        }
+      }
       if (cached.nearCropland === 1) {
         matches += 1;
       }
@@ -1722,18 +1867,72 @@ async function countCroplandMatchedHotspots(hotspots: FireHotspot[]) {
         checkedAt: new Date().toISOString()
       });
 
+      for (const candidate of annotatedHotspots) {
+        if (getHotspotCacheKey(candidate) === hotspotKey) {
+          candidate.nearCropland = nearCropland;
+        }
+      }
+
       if (nearCropland) {
         matches += 1;
       }
     } catch {
-      return 0;
+      return {
+        matchCount: 0,
+        hotspots: annotatedHotspots
+      };
     }
   }
 
-  return matches;
+  return {
+    matchCount: matches,
+    hotspots: annotatedHotspots
+  };
 }
 
-async function fetchRegistryCount(
+function getRegistryMatchLabel(
+  kind: "industrial" | "kiln",
+  tags?: Record<string, string>
+) {
+  const explicitName = tags?.name?.trim();
+  if (explicitName) {
+    return explicitName;
+  }
+
+  if (kind === "kiln") {
+    return "Mapped kiln";
+  }
+
+  return "Mapped industrial site";
+}
+
+function extractOverpassPoint(
+  element: {
+    lat?: number;
+    lon?: number;
+    center?: {
+      lat?: number;
+      lon?: number;
+    };
+    tags?: Record<string, string>;
+  },
+  kind: "industrial" | "kiln"
+) : RegistryMatch | null {
+  const lat = element.lat ?? element.center?.lat;
+  const lng = element.lon ?? element.center?.lon;
+
+  if (typeof lat !== "number" || typeof lng !== "number") {
+    return null;
+  }
+
+  return {
+    lat,
+    lng,
+    label: getRegistryMatchLabel(kind, element.tags)
+  };
+}
+
+async function fetchRegistryMatches(
   kind: "industrial" | "kiln",
   center: [number, number],
   radiusMeters: number
@@ -1743,9 +1942,15 @@ async function fetchRegistryCount(
 
   if (cached && isSignalCacheFresh(cached.checkedAt)) {
     try {
-      const payload = JSON.parse(cached.payloadJson) as { count?: number };
-      if (typeof payload.count === "number") {
-        return payload.count;
+      const payload = JSON.parse(cached.payloadJson) as {
+        count?: number;
+        points?: RegistryMatch[];
+      };
+      if (typeof payload.count === "number" && Array.isArray(payload.points)) {
+        return {
+          count: payload.count,
+          points: payload.points
+        };
       }
     } catch {
       // Ignore malformed cache payloads and refresh.
@@ -1764,7 +1969,7 @@ async function fetchRegistryCount(
   way["industrial"](around:${radiusMeters},${lat},${lng});
   relation["industrial"](around:${radiusMeters},${lat},${lng});
 );
-out ids;
+out center;
 `.trim()
       : `
 [out:json][timeout:18];
@@ -1776,7 +1981,7 @@ out ids;
   way["industrial"="brickworks"](around:${radiusMeters},${lat},${lng});
   relation["industrial"="brickworks"](around:${radiusMeters},${lat},${lng});
 );
-out ids;
+out center;
 `.trim();
 
   const response = await fetch(OVERPASS_API_URL, {
@@ -1793,17 +1998,47 @@ out ids;
     throw new Error(`Overpass request failed: ${response.status} ${response.statusText}`);
   }
 
-  const payload = (await response.json()) as { elements?: unknown[] };
-  const count = Array.isArray(payload.elements) ? payload.elements.length : 0;
+  const payload = (await response.json()) as {
+    elements?: Array<{
+      lat?: number;
+      lon?: number;
+      center?: {
+        lat?: number;
+        lon?: number;
+      };
+      tags?: Record<string, string>;
+    }>;
+  };
+  const elements = Array.isArray(payload.elements) ? payload.elements : [];
+  const uniquePoints = new Map<string, RegistryMatch>();
+
+  for (const element of elements) {
+    const point = extractOverpassPoint(element, kind);
+
+    if (!point) {
+      continue;
+    }
+
+    const key = `${point.lat.toFixed(4)},${point.lng.toFixed(4)}`;
+    if (!uniquePoints.has(key) && uniquePoints.size < MAX_REGISTRY_POINTS) {
+      uniquePoints.set(key, point);
+    }
+  }
+
+  const count = elements.length;
+  const points = [...uniquePoints.values()];
 
   setSignalCacheEntry({
     cacheKey,
     signalKind: `registry:${kind}`,
-    payloadJson: JSON.stringify({ count }),
+    payloadJson: JSON.stringify({ count, points }),
     checkedAt: new Date().toISOString()
   });
 
-  return count;
+  return {
+    count,
+    points
+  };
 }
 
 async function fetchSourceRegistryEvidence(
@@ -1822,18 +2057,22 @@ async function fetchSourceRegistryEvidence(
       upwindIndustrialCount,
       upwindKilnCount
     ] = await Promise.all([
-      fetchRegistryCount("kiln", localCenter, LOCAL_REGISTRY_RADIUS_METERS),
-      fetchRegistryCount("industrial", localCenter, LOCAL_REGISTRY_RADIUS_METERS),
-      fetchRegistryCount("industrial", upwindCenter, UPWIND_REGISTRY_RADIUS_METERS),
-      fetchRegistryCount("kiln", upwindCenter, UPWIND_REGISTRY_RADIUS_METERS)
+      fetchRegistryMatches("kiln", localCenter, LOCAL_REGISTRY_RADIUS_METERS),
+      fetchRegistryMatches("industrial", localCenter, LOCAL_REGISTRY_RADIUS_METERS),
+      fetchRegistryMatches("industrial", upwindCenter, UPWIND_REGISTRY_RADIUS_METERS),
+      fetchRegistryMatches("kiln", upwindCenter, UPWIND_REGISTRY_RADIUS_METERS)
     ]);
 
     return {
       provider: "osm",
-      localKilnCount,
-      localIndustrialCount,
-      upwindIndustrialCount,
-      upwindKilnCount
+      localKilnCount: localKilnCount.count,
+      localIndustrialCount: localIndustrialCount.count,
+      upwindIndustrialCount: upwindIndustrialCount.count,
+      upwindKilnCount: upwindKilnCount.count,
+      localKilns: localKilnCount.points,
+      localIndustrialSites: localIndustrialCount.points,
+      upwindIndustrialSites: upwindIndustrialCount.points,
+      upwindKilns: upwindKilnCount.points
     };
   } catch {
     return {
@@ -1841,7 +2080,11 @@ async function fetchSourceRegistryEvidence(
       localKilnCount: 0,
       localIndustrialCount: 0,
       upwindIndustrialCount: 0,
-      upwindKilnCount: 0
+      upwindKilnCount: 0,
+      localKilns: [],
+      localIndustrialSites: [],
+      upwindIndustrialSites: [],
+      upwindKilns: []
     };
   }
 }
@@ -1859,6 +2102,7 @@ function buildTrajectoryEvidenceFromPoints(points: TrajectoryPoint[]): Trajector
       available: false,
       originBearing: null,
       originDistanceKm: null,
+      pathPoints: [],
       agriTransport: 0.35,
       industrialTransport: 0.35,
       localRetention: 0.5,
@@ -1875,6 +2119,11 @@ function buildTrajectoryEvidenceFromPoints(points: TrajectoryPoint[]): Trajector
   let localRetention = 0;
   let dustTransport = 0;
   let alignedWeight = 0;
+  const pathPoints = [...points]
+    .sort((a, b) => b.distanceKm - a.distanceKm)
+    .map((point) => [point.latitude, point.longitude] as [number, number]);
+
+  pathPoints.push([kathmandu.coordinates.lat, kathmandu.coordinates.lng]);
 
   for (const point of points) {
     const recencyWeight = clamp(1 - Math.abs(point.ageHours) / 78, 0.12, 1);
@@ -1901,6 +2150,7 @@ function buildTrajectoryEvidenceFromPoints(points: TrajectoryPoint[]): Trajector
     available: true,
     originBearing: Math.round(anchorBearing),
     originDistanceKm: Math.round(farthestPoint.distanceKm),
+    pathPoints,
     agriTransport: totalWeight > 0 ? agriTransport / totalWeight : 0.35,
     industrialTransport: totalWeight > 0 ? industrialTransport / totalWeight : 0.35,
     localRetention: totalWeight > 0 ? localRetention / totalWeight : 0.5,
@@ -2157,7 +2407,8 @@ async function fetchFireSignal(): Promise<FireSignal | null> {
       cropBeltHotspotCount: 0,
       croplandMatchCount: 0,
       inferredSourceName: "Upwind fire activity",
-      inferredEvidenceLabel: "No FIRMS hotspot evidence"
+      inferredEvidenceLabel: "No FIRMS hotspot evidence",
+      hotspots: []
     };
   }
 
@@ -2209,7 +2460,8 @@ async function fetchFireSignal(): Promise<FireSignal | null> {
     }
   }
 
-  const croplandMatchCount = await countCroplandMatchedHotspots(hotspots);
+  const { matchCount: croplandMatchCount, hotspots: annotatedHotspots } =
+    await annotateCroplandMatchedHotspots(hotspots);
   const cropBeltDensity = clamp(cropBeltHotspotCount / 40, 0, 1);
   const croplandMatchRatio =
     hotspots.length > 0
@@ -2237,7 +2489,17 @@ async function fetchFireSignal(): Promise<FireSignal | null> {
       ? `${cropBeltHotspotCount} FIRMS hotspots with ${croplandMatchCount} cropland-aligned matches`
       : croplandMatchCount > 0
         ? `${hotspotCount} FIRMS hotspots, ${croplandMatchCount} near mapped cropland`
-        : `${hotspotCount} FIRMS hotspots in the upwind corridor`
+        : `${hotspotCount} FIRMS hotspots in the upwind corridor`,
+    hotspots: annotatedHotspots
+      .sort((a, b) => b.frp - a.frp)
+      .slice(0, MAX_HOTSPOTS_FOR_MAP)
+      .map((hotspot) => ({
+        lat: hotspot.lat,
+        lng: hotspot.lng,
+        frp: hotspot.frp,
+        date: hotspot.date,
+        nearCropland: hotspot.nearCropland ?? null
+      }))
   };
 }
 
@@ -2312,7 +2574,7 @@ async function fetchHistoricalFireSignals(days: number) {
       const cropBeltHotspotCount = hotspots.filter((hotspot) =>
         isWithinBounds(hotspot.lat, hotspot.lng, NORTH_INDIA_CROP_BELT_BBOX)
       ).length;
-      const croplandMatchCount = await countCroplandMatchedHotspots(hotspots);
+      const { matchCount: croplandMatchCount } = await annotateCroplandMatchedHotspots(hotspots);
       const cropBeltDensity = clamp(cropBeltHotspotCount / 40, 0, 1);
       const croplandMatchRatio =
         hotspots.length > 0
@@ -2337,7 +2599,8 @@ async function fetchHistoricalFireSignals(days: number) {
           ? `${cropBeltHotspotCount} FIRMS hotspots with ${croplandMatchCount} cropland-aligned matches`
           : croplandMatchCount > 0
             ? `${hotspotCount} FIRMS hotspots, ${croplandMatchCount} near mapped cropland`
-            : `${hotspotCount} FIRMS hotspots in the upwind corridor`
+            : `${hotspotCount} FIRMS hotspots in the upwind corridor`,
+        hotspots: []
       });
     }
 
@@ -2409,7 +2672,7 @@ function build24HourTimeline(
     .slice(-24)
     .map((measurement) => {
       const timestamp = getHourlyMeasurementTimestamp(measurement)!;
-      const weatherIndex = hourlyTimes.findIndex((time) => time === timestamp);
+      const weatherIndex = findHourlyIndex(hourlyTimes, timestamp);
       const windSpeedKph = Math.round(
         weatherIndex >= 0
           ? hourlySpeeds[weatherIndex] ?? weather.current?.wind_speed_10m ?? 0
@@ -2450,7 +2713,8 @@ function build24HourTimeline(
         confidence: attribution.confidence,
         dominantSource: attribution.sources[0]?.name ?? "Unknown",
         windDirection,
-        windSpeedKph
+        windSpeedKph,
+        transportPath: buildWindTrajectoryPath(weather, timestamp)
       };
     });
 }
@@ -2493,7 +2757,7 @@ function buildSixHourFeed(
     const bucketStart = new Date(date);
     bucketStart.setUTCHours(Math.floor(date.getUTCHours() / 6) * 6, 0, 0, 0);
     const key = bucketStart.toISOString();
-    const weatherIndex = hourlyTimes.findIndex((time) => time === utc);
+    const weatherIndex = findHourlyIndex(hourlyTimes, utc);
     const bucket = sixHourBuckets.get(key) ?? {
       values: [],
       weatherIndexes: [],
@@ -2565,7 +2829,93 @@ function buildSixHourFeed(
     });
 }
 
-export async function getHistoricalTrend(days = 30): Promise<HistoricalTrendEntry[]> {
+function buildMapEvidence(input: {
+  stationEvidence: StationEvidence[];
+  fireEvidence: FireEvidence | null;
+  registryEvidence: RegistryEvidence;
+  trajectoryEvidence: TrajectoryEvidence;
+}): MapEvidence {
+  const stations = input.stationEvidence
+    .filter(
+      (station) =>
+        typeof station.latitude === "number" && typeof station.longitude === "number"
+    )
+    .map((station) => ({
+      lat: station.latitude!,
+      lng: station.longitude!,
+      label: `${station.label} · PM2.5 ${station.pm25} ug/m3 · weight ${station.weight}%`,
+      kind: "station" as const,
+      weight: station.weight
+    }));
+
+  const hotspots =
+    input.fireEvidence?.hotspots.map((hotspot) => ({
+      lat: hotspot.lat,
+      lng: hotspot.lng,
+      label:
+        hotspot.nearCropland === true
+          ? `FIRMS hotspot · FRP ${Math.round(hotspot.frp)} · near cropland`
+          : `FIRMS hotspot · FRP ${Math.round(hotspot.frp)}`,
+      kind:
+        hotspot.nearCropland === true
+          ? ("cropland-hotspot" as const)
+          : ("hotspot" as const),
+      weight: clamp(hotspot.frp / 40, 0.25, 1)
+    })) ?? [];
+
+  const registry: MapEvidencePoint[] = [
+    ...input.registryEvidence.localKilns.map((point) => ({
+      lat: point.lat,
+      lng: point.lng,
+      label: point.label,
+      kind: "kiln" as const
+    })),
+    ...input.registryEvidence.upwindKilns.map((point) => ({
+      lat: point.lat,
+      lng: point.lng,
+      label: point.label,
+      kind: "kiln" as const
+    })),
+    ...input.registryEvidence.localIndustrialSites.map((point) => ({
+      lat: point.lat,
+      lng: point.lng,
+      label: point.label,
+      kind: "industrial" as const
+    })),
+    ...input.registryEvidence.upwindIndustrialSites.map((point) => ({
+      lat: point.lat,
+      lng: point.lng,
+      label: point.label,
+      kind: "industrial" as const
+    }))
+  ];
+
+  const lines =
+    input.trajectoryEvidence.pathPoints.length >= 2
+      ? [
+          {
+            label:
+              input.trajectoryEvidence.provider === "hysplit"
+                ? "NOAA HYSPLIT back trajectory"
+                : "Wind-derived back trajectory",
+            kind: "trajectory" as const,
+            points: input.trajectoryEvidence.pathPoints
+          }
+        ]
+      : [];
+
+  return {
+    stations,
+    hotspots,
+    registry,
+    lines
+  };
+}
+
+export async function getHistoricalTrend(
+  days = 30,
+  stationSummary?: StationSummary
+): Promise<HistoricalTrendEntry[]> {
   noStore();
 
   const cacheKey = `trend:v2:${days}d`;
@@ -2579,10 +2929,9 @@ export async function getHistoricalTrend(days = 30): Promise<HistoricalTrendEntr
   }
 
   try {
-    const latest = await fetchBestLatestPm25();
-    const sensorId = latest.measurement.sensorsId;
-    const measurementTimestamp =
-      latest.measurement.datetime?.utc ?? new Date().toISOString();
+    const latest = stationSummary ? null : await fetchBestLatestPm25();
+    const sensorId = stationSummary?.primarySensorId ?? latest?.measurement.sensorsId;
+    const measurementTimestamp = latest?.measurement.datetime?.utc ?? new Date().toISOString();
 
     if (typeof sensorId !== "number") {
       return getSevenDayTrend(days) as HistoricalTrendEntry[];
@@ -2661,13 +3010,18 @@ export async function getHistoricalTrend(days = 30): Promise<HistoricalTrendEntr
             localKilnCount: 0,
             localIndustrialCount: 0,
             upwindIndustrialCount: 0,
-            upwindKilnCount: 0
+            upwindKilnCount: 0,
+            localKilns: [],
+            localIndustrialSites: [],
+            upwindIndustrialSites: [],
+            upwindKilns: []
           }));
           const trajectoryEvidence = {
             provider: "wind-model" as const,
             available: false,
             originBearing: null,
             originDistanceKm: null,
+            pathPoints: buildWindTrajectoryPath(historicalWeather, timestamp),
             ...buildTrajectorySignals(historicalWeather, timestamp)
           };
           const attribution = computeAttribution({
@@ -2681,9 +3035,9 @@ export async function getHistoricalTrend(days = 30): Promise<HistoricalTrendEntr
               return typeof utc === "string" && new Date(utc).getTime() <= bucketTime;
             }),
             weather: historicalWeather,
-            stationQuality: latest.stationQuality,
-            agreementScore: latest.agreementScore,
-            stationCount: latest.stationCount,
+            stationQuality: stationSummary?.stationQuality ?? latest?.stationQuality ?? 0.75,
+            agreementScore: stationSummary?.agreementScore ?? latest?.agreementScore ?? 0.7,
+            stationCount: stationSummary?.stationCount ?? latest?.stationCount ?? 1,
             fireSignal: dailyFireSignals.get(toUtcDateString(timestamp)) ?? null,
             modelEvidence: buildModelEvidence(pm25, historicalAirQuality, timestamp),
             trajectoryEvidence,
@@ -2752,6 +3106,7 @@ export async function getSnapshot(): Promise<CitySnapshot> {
       available: false,
       originBearing: null,
       originDistanceKm: null,
+      pathPoints: buildWindTrajectoryPath(weather, measurementTimestamp),
       ...buildTrajectorySignals(weather, measurementTimestamp)
     };
   const registryEvidence = await fetchSourceRegistryEvidence(
@@ -2811,6 +3166,12 @@ export async function getSnapshot(): Promise<CitySnapshot> {
     trajectoryEvidence,
     registryEvidence,
     stationEvidence: stations,
+    stationSummary: {
+      primarySensorId: measurement.sensorsId ?? null,
+      stationQuality,
+      agreementScore,
+      stationCount
+    },
     modelEvidence,
     confidenceBreakdown: attribution.confidenceBreakdown,
     fireEvidence: fireSignal ?? {
@@ -2820,8 +3181,15 @@ export async function getSnapshot(): Promise<CitySnapshot> {
       cropBeltHotspotCount: 0,
       croplandMatchCount: 0,
       inferredSourceName: "Upwind fire activity",
-      inferredEvidenceLabel: "No FIRMS hotspot evidence"
+      inferredEvidenceLabel: "No FIRMS hotspot evidence",
+      hotspots: []
     },
+    mapEvidence: buildMapEvidence({
+      stationEvidence: stations,
+      fireEvidence: fireSignal,
+      registryEvidence,
+      trajectoryEvidence
+    }),
     dataMode: "live",
     interpretationMode: "heuristic"
   };

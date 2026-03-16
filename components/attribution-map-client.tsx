@@ -2,7 +2,7 @@
 
 import "leaflet/dist/leaflet.css";
 import {
-  Circle,
+  CircleMarker,
   MapContainer,
   Marker,
   Pane,
@@ -20,16 +20,30 @@ type AttributionMapProps = {
 
 type SourceRegion = {
   center: [number, number];
-  radius: number;
   label: string;
   color: string;
+  radius: number;
 };
 
-function getShareColor(share: number) {
-  if (share >= 40) return "#cf4b3c";
-  if (share >= 30) return "#de6a3c";
-  if (share >= 20) return "#e39b46";
-  return "#d7ba65";
+function getEvidenceColor(kind: SourceRegion["color"]) {
+  return kind;
+}
+
+function getPointStyle(kind: string) {
+  switch (kind) {
+    case "station":
+      return { color: "#3368f6", fill: "#3368f6" };
+    case "cropland-hotspot":
+      return { color: "#cf4b3c", fill: "#cf4b3c" };
+    case "hotspot":
+      return { color: "#de6a3c", fill: "#de6a3c" };
+    case "kiln":
+      return { color: "#9c6b30", fill: "#9c6b30" };
+    case "industrial":
+      return { color: "#4b5563", fill: "#4b5563" };
+    default:
+      return { color: "#6b7280", fill: "#6b7280" };
+  }
 }
 
 const cityIcon = new DivIcon({
@@ -41,23 +55,24 @@ const cityIcon = new DivIcon({
 
 export function AttributionMapClient({ city }: AttributionMapProps) {
   const center: LatLngExpression = [city.coordinates.lat, city.coordinates.lng];
-  const sourceRegions: SourceRegion[] = [...city.sources]
-    .sort((a, b) => b.share - a.share)
-    .map((source) => {
-      if (!source.overlay) {
-        return null;
-      }
-
-      return {
-        center: source.overlay.center,
-        radius: Math.round(source.overlay.radius * (0.72 + source.share / 100)),
-        label: `${source.name} (${source.share}%)`,
-        color: getShareColor(source.share)
-      };
-    })
-    .filter((region): region is SourceRegion => region !== null);
-  const corridorPath: LatLngExpression[] = sourceRegions.map((region) => region.center);
-  corridorPath.push(center);
+  const hotspotPoints: SourceRegion[] = city.mapEvidence.hotspots.map((hotspot) => ({
+    center: [hotspot.lat, hotspot.lng],
+    label: hotspot.label,
+    color: getPointStyle(hotspot.kind).color,
+    radius: hotspot.weight ? Math.max(4, 3 + hotspot.weight * 4) : 4
+  }));
+  const registryPoints: SourceRegion[] = city.mapEvidence.registry.map((point) => ({
+    center: [point.lat, point.lng],
+    label: point.label,
+    color: getPointStyle(point.kind).color,
+    radius: 4
+  }));
+  const stationPoints: SourceRegion[] = city.mapEvidence.stations.map((station) => ({
+    center: [station.lat, station.lng],
+    label: station.label,
+    color: getPointStyle(station.kind).color,
+    radius: station.weight ? Math.max(5, 4 + station.weight / 22) : 5
+  }));
 
   return (
     <div className="leaflet-shell">
@@ -74,32 +89,75 @@ export function AttributionMapClient({ city }: AttributionMapProps) {
         />
 
         <Pane name="corridor" style={{ zIndex: 410 }}>
-          <Polyline
-            pathOptions={{
-              color: "#15664f",
-              weight: 4,
-              opacity: 0.75,
-              dashArray: "8 12"
-            }}
-            positions={corridorPath}
-          />
+          {city.mapEvidence.lines.map((line) => (
+            <Polyline
+              key={line.label}
+              pathOptions={{
+                color: "#15664f",
+                weight: 4,
+                opacity: 0.75,
+                dashArray: "8 12"
+              }}
+              positions={line.points}
+            >
+              <Tooltip>{line.label}</Tooltip>
+            </Polyline>
+          ))}
         </Pane>
 
-        {sourceRegions.map((region) => (
-          <Circle
-            key={region.label}
-            center={region.center}
-            radius={region.radius}
-            pathOptions={{
-              color: region.color,
-              fillColor: region.color,
-              fillOpacity: 0.25,
-              weight: 2
-            }}
-          >
-            <Tooltip>{region.label}</Tooltip>
-          </Circle>
-        ))}
+        <Pane name="hotspots" style={{ zIndex: 420 }}>
+          {hotspotPoints.map((region) => (
+            <CircleMarker
+              key={`${region.label}-${region.center[0]}-${region.center[1]}`}
+              center={region.center}
+              radius={region.radius}
+              pathOptions={{
+                color: getEvidenceColor(region.color),
+                fillColor: getEvidenceColor(region.color),
+                fillOpacity: 0.6,
+                weight: 1.5
+              }}
+            >
+              <Tooltip>{region.label}</Tooltip>
+            </CircleMarker>
+          ))}
+        </Pane>
+
+        <Pane name="registry" style={{ zIndex: 430 }}>
+          {registryPoints.map((region) => (
+            <CircleMarker
+              key={`${region.label}-${region.center[0]}-${region.center[1]}`}
+              center={region.center}
+              radius={region.radius}
+              pathOptions={{
+                color: getEvidenceColor(region.color),
+                fillColor: getEvidenceColor(region.color),
+                fillOpacity: 0.7,
+                weight: 1
+              }}
+            >
+              <Tooltip>{region.label}</Tooltip>
+            </CircleMarker>
+          ))}
+        </Pane>
+
+        <Pane name="stations" style={{ zIndex: 440 }}>
+          {stationPoints.map((region) => (
+            <CircleMarker
+              key={`${region.label}-${region.center[0]}-${region.center[1]}`}
+              center={region.center}
+              radius={region.radius}
+              pathOptions={{
+                color: getEvidenceColor(region.color),
+                fillColor: getEvidenceColor(region.color),
+                fillOpacity: 0.9,
+                weight: 2
+              }}
+            >
+              <Tooltip>{region.label}</Tooltip>
+            </CircleMarker>
+          ))}
+        </Pane>
 
         <Marker icon={cityIcon} position={center}>
           <Popup>

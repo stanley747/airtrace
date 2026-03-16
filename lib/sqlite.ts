@@ -67,9 +67,6 @@ function initializeDatabase(db: DatabaseHandle) {
       source_name TEXT NOT NULL,
       share INTEGER NOT NULL,
       evidence TEXT NOT NULL,
-      overlay_lat REAL,
-      overlay_lng REAL,
-      overlay_radius REAL,
       FOREIGN KEY (snapshot_generated_at) REFERENCES snapshots(generated_at) ON DELETE CASCADE
     );
 
@@ -196,11 +193,8 @@ export function persistSnapshot(snapshot: CitySnapshot) {
       position,
       source_name,
       share,
-      evidence,
-      overlay_lat,
-      overlay_lng,
-      overlay_radius
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      evidence
+    ) VALUES (?, ?, ?, ?, ?)
   `);
 
   const transaction = db.transaction((currentSnapshot: CitySnapshot) => {
@@ -231,10 +225,7 @@ export function persistSnapshot(snapshot: CitySnapshot) {
         index,
         source.name,
         source.share,
-        source.evidence,
-        source.overlay?.center[0] ?? null,
-        source.overlay?.center[1] ?? null,
-        source.overlay?.radius ?? null
+        source.evidence
       );
     });
 
