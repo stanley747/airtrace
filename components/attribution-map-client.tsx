@@ -109,16 +109,6 @@ export function AttributionMapClient({ city }: AttributionMapProps) {
           </Popup>
         </Marker>
       </MapContainer>
-      <div className="map-legend">
-        <span>
-          <i className="legend-swatch legend-swatch-green" />
-          Inferred transport path
-        </span>
-        <span>
-          <i className="legend-swatch legend-swatch-orange" />
-          Contributor region
-        </span>
-      </div>
     </div>
   );
 }

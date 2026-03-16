@@ -81,6 +81,12 @@ Recommended sources:
 - NASA datasets for fires, smoke, and satellite-derived environmental signals
 - Copernicus or Sentinel data when satellite overlays are needed
 
+Hard requirement:
+
+- do not hardcode attribution source buckets, source names, or static source-region assumptions when live evidence can drive them
+- all pollution levels, source labels, contributors, and evidence should be dynamically derived from current or persisted data inputs
+- if a source cannot be supported by live or stored evidence, either omit it or label it conservatively as uncertain rather than inventing a precise source
+
 Treat NOAA HYSPLIT as an advanced step, not a day-one requirement. For MVP work, a transparent heuristic using wind vectors, upwind regions, and fire or emissions indicators is acceptable if clearly labeled as an estimate.
 
 ## Attribution Logic
@@ -207,6 +213,9 @@ When building features:
 - expose uncertainty where inputs are incomplete
 - make the app useful even if one upstream data source is temporarily unavailable
 - if using an LLM, use it for attribution explanation and structured hypotheses grounded in measured data; do not let it invent unsupported certainty
+- never rely on hardcoded source lists as the primary attribution output when dynamic evidence is available
+- treat the evidence graph as the source of truth: observations, modeled fields, hotspot activity, land use, transport, and persisted history should determine which contributors appear
+- if a fallback is necessary, degrade by reducing certainty or hiding unsupported contributors, not by emitting fabricated or static source claims
 
 If data quality is weak, degrade gracefully:
 

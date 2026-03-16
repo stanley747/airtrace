@@ -8,7 +8,12 @@ AirTrace is a Next.js pollution attribution dashboard for Kathmandu, Nepal. It c
 - OpenAQ station search across Nepal with Kathmandu-aware ranking
 - multi-station PM2.5 consensus from several fresh valid stations
 - Open-Meteo wind context and 48h wind trail
+- Open-Meteo air-quality model context for PM2.5, dust, aerosol optical depth, and AQI agreement
 - NASA FIRMS hotspot integration for upwind fire activity evidence
+- OSM/Overpass cropland filtering for hotspot classification
+- OSM/Overpass source registries for industrial zones and brick-kiln evidence
+- optional NOAA HYSPLIT trajectory support when credentials are available
+- local SQLite persistence for snapshots, fire evidence, and cropland-cache results
 - deterministic attribution engine with:
   - source corridor weighting
   - 24-48h trajectory-lite transport signals
@@ -23,7 +28,11 @@ If live upstream data is unavailable or invalid, the app returns no city snapsho
 
 - OpenAQ: live PM2.5 stations and hourly history
 - Open-Meteo: current and historical wind data
+- Open-Meteo Air Quality: modeled PM2.5, AQI, dust, and aerosol context
 - NASA FIRMS: recent fire hotspots in an upwind regional bounding box
+- OpenStreetMap / Overpass: cropland proximity checks for hotspot classification
+- OpenStreetMap / Overpass: industrial and brick-kiln registry counts around local and upwind corridors
+- NOAA READY / HYSPLIT Web API: optional back trajectories when authenticated
 
 ## Environment Variables
 
@@ -33,6 +42,8 @@ Create `.env.local` with:
 OPENAQ_API_KEY=...
 OPEN_METEO_BASE_URL=https://api.open-meteo.com
 FIRMS_MAP_KEY=...
+HYSPLIT_AUTH_HEADER_NAME=...
+HYSPLIT_AUTH_HEADER_VALUE=...
 ```
 
 Notes:
@@ -40,6 +51,8 @@ Notes:
 - `OPENAQ_API_KEY` is required for live PM2.5 data.
 - `FIRMS_MAP_KEY` is optional but recommended. When present, FIRMS hotspots influence upwind fire-activity attribution.
 - `OPEN_METEO_BASE_URL` is optional and defaults to `https://api.open-meteo.com`.
+- air-quality requests default to `https://air-quality-api.open-meteo.com`.
+- HYSPLIT is optional. When `HYSPLIT_AUTH_HEADER_NAME` and `HYSPLIT_AUTH_HEADER_VALUE` are present, the app will attempt true back trajectories through the READY API. Otherwise it falls back to the existing wind-model trajectory logic.
 
 ## Local Development
 
@@ -98,6 +111,10 @@ It uses:
 - PM2.5 persistence and spike behavior
 - seasonal priors
 - FIRMS fire hotspot density, FRP, and hotspot geometry
+- cropland-aligned hotspot filtering
+- Open-Meteo modeled PM2.5, dust, and aerosol agreement
+- dynamic OSM source registries for brick kilns and industrial zones
+- optional HYSPLIT back trajectories
 
 Confidence is based on:
 
@@ -108,6 +125,7 @@ Confidence is based on:
 - wind consistency
 - trajectory consistency
 - source-score separation
+- modeled-vs-observed agreement
 
 The app does not require OpenAI or any LLM dependency. Attribution is fully deterministic.
 
@@ -120,8 +138,7 @@ npm run typecheck
 
 ## Next Improvements
 
-- add Open-Meteo air quality as a secondary PM2.5 / aerosol signal
-- surface confidence diagnostics in the UI
-- expose FIRMS hotspot counts directly in the interface
-- persist recent snapshots for anomaly and baseline detection
+- integrate true back trajectories such as HYSPLIT instead of only trajectory-lite wind inference
+- add richer source registries beyond OSM counts, such as explicit urban-emissions inventories
+- extend SQLite-backed historical views with source evidence trends and anomaly scoring
 - calibrate attribution weights against real-world episodes
