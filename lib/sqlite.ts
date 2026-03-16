@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import type { CitySnapshot } from "@/lib/airtrace-data";
 
 const DEFAULT_DB_PATH = path.join(process.cwd(), "data", "airtrace.sqlite");
+const SERVERLESS_DB_PATH = path.join(process.env.TMPDIR ?? "/tmp", "airtrace.sqlite");
 
 type DatabaseHandle = Database.Database;
 
@@ -25,7 +26,15 @@ declare global {
 }
 
 function getDatabasePath() {
-  return process.env.AIRTRACE_DB_PATH ?? DEFAULT_DB_PATH;
+  if (process.env.AIRTRACE_DB_PATH) {
+    return process.env.AIRTRACE_DB_PATH;
+  }
+
+  if (process.env.VERCEL || process.cwd().startsWith("/var/task")) {
+    return SERVERLESS_DB_PATH;
+  }
+
+  return DEFAULT_DB_PATH;
 }
 
 function initializeDatabase(db: DatabaseHandle) {
