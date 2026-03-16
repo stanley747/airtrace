@@ -118,6 +118,20 @@ function formatTrajectoryProviderShort(trajectoryEvidence: TrajectoryEvidence) {
   return "Wind transport fallback";
 }
 
+function formatRegimeConfidence(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatStationSpreadSummary(spreadUgM3: number, outlierCount: number) {
+  const spread = `${spreadUgM3.toFixed(1)} ug/m3 spread`;
+
+  if (outlierCount <= 0) {
+    return `${spread} / tight consensus`;
+  }
+
+  return `${spread} / ${pluralize(outlierCount, "outlier")} down-weighted`;
+}
+
 type HomePageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
@@ -231,6 +245,10 @@ export default async function HomePage({ searchParams }: HomePageProps) {
                   <span className="sidebar-stat-label">AQI</span>
                   <strong>{selectedCity.aqiCategory}</strong>
                 </div>
+                <div className="sidebar-stat">
+                  <span className="sidebar-stat-label">Regime</span>
+                  <strong>{selectedCity.regime.name}</strong>
+                </div>
               </div>
             </div>
           </nav>
@@ -283,6 +301,12 @@ export default async function HomePage({ searchParams }: HomePageProps) {
                   <strong>{selectedCity.confidence}</strong>
                 </div>
                 <div className="meta-item">
+                  <span className="eyebrow">Current regime</span>
+                  <strong>
+                    {selectedCity.regime.name} {" / "} {formatRegimeConfidence(selectedCity.regime.confidence)}
+                  </strong>
+                </div>
+                <div className="meta-item">
                   <span className="eyebrow">Dominant source</span>
                   <strong>{strongestSource?.name ?? "N/A"}</strong>
                 </div>
@@ -331,6 +355,13 @@ export default async function HomePage({ searchParams }: HomePageProps) {
                     <span>
                       Modeled PM2.5 {selectedCity.modelEvidence.modeledPm25 ?? "N/A"} ug/m3
                     </span>
+                  </div>
+                  <div className="preview-card">
+                    <span className="eyebrow">Regime</span>
+                    <strong className="preview-value preview-value-compact">
+                      {selectedCity.regime.name}
+                    </strong>
+                    <span>{formatRegimeConfidence(selectedCity.regime.confidence)} regime confidence</span>
                   </div>
                 </div>
               </div>
@@ -403,6 +434,14 @@ export default async function HomePage({ searchParams }: HomePageProps) {
                 </strong>
                 <span className="stat-note">{strongestWind?.direction ?? "N/A"}</span>
               </article>
+              <article className="stat-card">
+                <span className="eyebrow">Station spread</span>
+                <strong className="stat-value">{selectedCity.stationSummary.spreadUgM3.toFixed(1)}</strong>
+                <span className="stat-note">
+                  ug/m3 spread / {selectedCity.stationSummary.outlierCount} outlier
+                  {selectedCity.stationSummary.outlierCount === 1 ? "" : "s"} down-weighted
+                </span>
+              </article>
             </div>
           </section>
 
@@ -449,6 +488,12 @@ export default async function HomePage({ searchParams }: HomePageProps) {
                 </div>
                 <div className="metric-list signal-list">
                   <div className="metric-row">
+                    <span>Current regime</span>
+                    <strong>
+                      {selectedCity.regime.name} / {formatRegimeConfidence(selectedCity.regime.confidence)}
+                    </strong>
+                  </div>
+                  <div className="metric-row">
                     <span>Model support</span>
                     <strong>
                       {selectedCity.modelEvidence.modeledPm25 ?? "N/A"} ug/m3 /{" "}
@@ -466,6 +511,15 @@ export default async function HomePage({ searchParams }: HomePageProps) {
                   <div className="metric-row">
                     <span>Registry support</span>
                     <strong>{formatRegistrySourceSummary(selectedCity.registryEvidence)}</strong>
+                  </div>
+                  <div className="metric-row">
+                    <span>Station spread</span>
+                    <strong>
+                      {formatStationSpreadSummary(
+                        selectedCity.stationSummary.spreadUgM3,
+                        selectedCity.stationSummary.outlierCount
+                      )}
+                    </strong>
                   </div>
                 </div>
               </div>
@@ -583,6 +637,15 @@ export default async function HomePage({ searchParams }: HomePageProps) {
                     {selectedCity.stationEvidence.length} stations
                   </span>
                 </div>
+                <div className="panel-summary-row">
+                  <span>{selectedCity.stationSummary.consensusMethod.replaceAll("-", " ")}</span>
+                  <strong>
+                    {formatStationSpreadSummary(
+                      selectedCity.stationSummary.spreadUgM3,
+                      selectedCity.stationSummary.outlierCount
+                    )}
+                  </strong>
+                </div>
                 <div className="station-list">
                   {topStations.map((station) => (
                     <div key={station.locationId} className="station-row">
@@ -596,6 +659,8 @@ export default async function HomePage({ searchParams }: HomePageProps) {
                       <div className="station-side">
                         <span>fresh {station.freshnessHours}h</span>
                         <span>quality {station.stationQuality}%</span>
+                        <span>delta {station.consensusDelta > 0 ? "+" : ""}{station.consensusDelta} ug/m3</span>
+                        <span>retained {station.outlierPenalty}%</span>
                       </div>
                     </div>
                   ))}

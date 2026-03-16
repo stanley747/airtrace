@@ -3,6 +3,7 @@ import JSZip from "jszip";
 
 import {
   getCroplandCacheEntry,
+  getRecentSnapshots,
   getSevenDayTrend,
   getSignalCacheEntry,
   persistSnapshot,
@@ -60,6 +61,17 @@ export type TimelineFrame = {
   windDirection: string;
   windSpeedKph: number;
   transportPath: [number, number][];
+  regime: AttributionRegime;
+};
+
+export type AttributionRegime = {
+  name:
+    | "Local accumulation"
+    | "Regional transport"
+    | "Fire-influenced transport"
+    | "Dust-influenced transport"
+    | "Mixed transition";
+  confidence: number;
 };
 
 export type TrajectoryEvidence = {
@@ -95,6 +107,8 @@ export type StationEvidence = {
   stationQuality: number;
   weight: number;
   freshnessHours: number;
+  consensusDelta: number;
+  outlierPenalty: number;
 };
 
 export type StationSummary = {
@@ -102,6 +116,9 @@ export type StationSummary = {
   stationQuality: number;
   agreementScore: number;
   stationCount: number;
+  spreadUgM3: number;
+  outlierCount: number;
+  consensusMethod: "robust-weighted-mean";
 };
 
 export type ConfidenceBreakdown = {
@@ -178,6 +195,7 @@ export type CitySnapshot = {
   confidenceBreakdown: ConfidenceBreakdown;
   fireEvidence: FireEvidence;
   mapEvidence: MapEvidence;
+  regime: AttributionRegime;
   dataMode: "live";
   interpretationMode: "heuristic";
 };
@@ -289,7 +307,8 @@ type AiAttributionResponse = {
   localShare: number;
   confidence: "Low" | "Medium" | "High";
   confidenceBreakdown: ConfidenceBreakdown;
-  sources: SourceContribution[];
+  sources: Array<SourceContribution & { imported: boolean }>;
+  regime: AttributionRegime;
 };
 
 type ModelEvidenceContext = ModelEvidence & {
@@ -687,6 +706,52 @@ function average(values: number[]) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
+function median(values: number[]) {
+  if (values.length === 0) {
+    return 0;
+  }
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const midpoint = Math.floor(sorted.length / 2);
+
+  if (sorted.length % 2 === 0) {
+    return (sorted[midpoint - 1] + sorted[midpoint]) / 2;
+  }
+
+  return sorted[midpoint];
+}
+
+function weightedAverage(values: number[], weights: number[]) {
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+
+  if (values.length === 0 || totalWeight <= 0) {
+    return values[0] ?? 0;
+  }
+
+  return values.reduce((sum, value, index) => sum + value * (weights[index] ?? 0), 0) / totalWeight;
+}
+
+function weightedStandardDeviation(values: number[], weights: number[], mean: number) {
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+
+  if (values.length === 0 || totalWeight <= 0) {
+    return 0;
+  }
+
+  return Math.sqrt(
+    values.reduce((sum, value, index) => {
+      const diff = value - mean;
+      return sum + diff * diff * (weights[index] ?? 0);
+    }, 0) / totalWeight
+  );
+}
+
+function confidenceLabelToScore(confidence: "Low" | "Medium" | "High") {
+  if (confidence === "High") return 0.82;
+  if (confidence === "Medium") return 0.58;
+  return 0.34;
+}
+
 function angularDistance(a: number, b: number) {
   const diff = Math.abs((((a - b) % 360) + 540) % 360 - 180);
   return Math.min(diff, 180);
@@ -1040,10 +1105,253 @@ function normalizeContributors(candidates: ContributorCandidate[]) {
   return normalized.sort((a, b) => b.share - a.share);
 }
 
+function buildAttributionSummary(input: {
+  dominantSource: string;
+  importedShare: number;
+  windDirection: string;
+  regime: AttributionRegime;
+}) {
+  if (input.regime.name === "Local accumulation") {
+    return `${input.dominantSource} is leading under a local-accumulation regime, with weaker ventilation allowing PM2.5 to build inside the Kathmandu valley.`;
+  }
+
+  if (input.regime.name === "Fire-influenced transport") {
+    return `${input.dominantSource} is leading under a fire-influenced transport regime, with ${input.windDirection} flow carrying upwind smoke toward Kathmandu.`;
+  }
+
+  if (input.regime.name === "Dust-influenced transport") {
+    return `${input.dominantSource} is leading under a dust-influenced regime, with transport and surface lift both contributing to Kathmandu's particulate load.`;
+  }
+
+  if (input.importedShare >= 55 || input.regime.name === "Regional transport") {
+    return `${input.dominantSource} likely drove most of the current PM2.5 load, with ${input.windDirection} transport sustaining imported haze into Kathmandu.`;
+  }
+
+  return `${input.dominantSource} appears to be the leading contributor, but current conditions still point to a mixed balance between imported haze and local valley emissions.`;
+}
+
 function buildConfidenceLevel(score: number): "Low" | "Medium" | "High" {
   if (score >= 0.72) return "High";
   if (score >= 0.48) return "Medium";
   return "Low";
+}
+
+function detectRegime(input: {
+  localSpike: number;
+  stagnation: number;
+  transportStrength: number;
+  persistence: number;
+  agriCorridor: number;
+  industrialCorridor: number;
+  localShelterFlow: number;
+  trajectory: TrajectoryEvidence;
+  fireSignal: FireSignal;
+  modelEvidence: ModelEvidenceContext;
+  registryEvidence: RegistryEvidenceInternal;
+  dustPotential: number;
+  modeledDustBoost: number;
+  aerosolSupport: number;
+}): AttributionRegime & {
+  localMultiplier: number;
+  fireMultiplier: number;
+  transportMultiplier: number;
+  dustMultiplier: number;
+} {
+  const localScore =
+    input.stagnation * 0.34 +
+    input.localSpike * 0.2 +
+    input.trajectory.localRetention * 0.18 +
+    input.localShelterFlow * 0.16 +
+    clamp(
+      (input.registryEvidence.localKilnCount * 0.65 +
+        input.registryEvidence.localIndustrialCount * 0.35) /
+        24,
+      0,
+      1
+    ) *
+      0.12;
+  const fireScore =
+    input.fireSignal.hotspotDensity * 0.42 +
+    clamp(input.fireSignal.croplandMatchCount / 10, 0, 1) * 0.24 +
+    (input.agriCorridor * 0.2 + input.trajectory.agriTransport * 0.14) +
+    input.transportStrength * 0.1;
+  const transportScore =
+    input.persistence * 0.24 +
+    input.aerosolSupport * 0.22 +
+    (input.industrialCorridor * 0.18 + input.trajectory.industrialTransport * 0.18) +
+    input.transportStrength * 0.12 +
+    clamp(input.modelEvidence.agreementScore, 0, 1) * 0.06;
+  const dustScore =
+    input.modeledDustBoost * 0.38 +
+    input.dustPotential * 0.28 +
+    input.trajectory.dustTransport * 0.18 +
+    input.transportStrength * 0.1 +
+    (1 - input.persistence) * 0.06;
+
+  const ranked = [
+    {
+      name: "Local accumulation" as const,
+      score: localScore,
+      multipliers: {
+        localMultiplier: 1.16,
+        fireMultiplier: 0.9,
+        transportMultiplier: 0.9,
+        dustMultiplier: 0.88
+      }
+    },
+    {
+      name: "Fire-influenced transport" as const,
+      score: fireScore,
+      multipliers: {
+        localMultiplier: 0.94,
+        fireMultiplier: 1.22,
+        transportMultiplier: 1.05,
+        dustMultiplier: 0.9
+      }
+    },
+    {
+      name: "Regional transport" as const,
+      score: transportScore,
+      multipliers: {
+        localMultiplier: 0.94,
+        fireMultiplier: 0.98,
+        transportMultiplier: 1.18,
+        dustMultiplier: 0.92
+      }
+    },
+    {
+      name: "Dust-influenced transport" as const,
+      score: dustScore,
+      multipliers: {
+        localMultiplier: 0.9,
+        fireMultiplier: 0.86,
+        transportMultiplier: 0.98,
+        dustMultiplier: 1.24
+      }
+    }
+  ].sort((a, b) => b.score - a.score);
+
+  const top = ranked[0];
+  const second = ranked[1];
+  const separation = clamp(top.score - second.score, 0, 1);
+  const confidence = clamp(top.score * 0.55 + separation * 0.45, 0, 1);
+
+  if (top.score < 0.34 || separation < 0.08) {
+    return {
+      name: "Mixed transition",
+      confidence: clamp(top.score * 0.45 + separation * 0.25 + 0.2, 0, 1),
+      localMultiplier: 1,
+      fireMultiplier: 1,
+      transportMultiplier: 1,
+      dustMultiplier: 1
+    };
+  }
+
+  return {
+    name: top.name,
+    confidence,
+    ...top.multipliers
+  };
+}
+
+function smoothAttribution(
+  current: AiAttributionResponse,
+  recentSnapshots: ReturnType<typeof getRecentSnapshots>,
+  windDirection: string
+): AiAttributionResponse {
+  const recent = recentSnapshots.slice(0, 8);
+
+  if (recent.length === 0) {
+    return current;
+  }
+
+  let importedAccumulator = current.importedShare * 0.62;
+  let confidenceAccumulator = current.confidenceBreakdown.overall * 0.7;
+  let weightTotal = 0.62;
+  let volatilityAccumulator = 0;
+  let volatilityWeightTotal = 0;
+  const baselineImported = current.importedShare;
+
+  recent.forEach((snapshot, index) => {
+    const ageHours = clamp(
+      (Date.now() - new Date(snapshot.generatedAt).getTime()) / (60 * 60 * 1000),
+      0,
+      72
+    );
+    const recencyWeight = Math.exp(-ageHours / 8) / (1 + index * 0.25);
+    const confidenceWeight = confidenceLabelToScore(snapshot.confidence);
+    const weight = recencyWeight * confidenceWeight;
+
+    importedAccumulator += snapshot.importedShare * weight;
+    confidenceAccumulator += confidenceLabelToScore(snapshot.confidence) * 100 * weight;
+    weightTotal += weight;
+
+    const swing = Math.abs(snapshot.importedShare - baselineImported);
+    volatilityAccumulator += swing * weight;
+    volatilityWeightTotal += weight;
+  });
+
+  const smoothedImported = clamp(Math.round(importedAccumulator / weightTotal), 0, 100);
+  const smoothedLocal = 100 - smoothedImported;
+  const averageSwing =
+    volatilityWeightTotal > 0 ? volatilityAccumulator / volatilityWeightTotal : 0;
+  const stabilityPenalty = clamp(averageSwing / 28, 0, 1) * 12;
+  const smoothedOverall = clamp(
+    Math.round(confidenceAccumulator / weightTotal - stabilityPenalty),
+    0,
+    100
+  );
+  const confidenceScore = smoothedOverall / 100;
+  const confidence = buildConfidenceLevel(confidenceScore);
+  const importedCurrent = current.sources
+    .filter((source) => source.imported)
+    .reduce((sum, source) => sum + source.share, 0);
+  const localCurrent = 100 - importedCurrent;
+
+  const sources = current.sources.map((source) => {
+    if (source.imported) {
+      const ratio = importedCurrent > 0 ? source.share / importedCurrent : 0;
+      return {
+        ...source,
+        share: Math.round(smoothedImported * ratio)
+      };
+    }
+
+    const ratio = localCurrent > 0 ? source.share / localCurrent : 0;
+    return {
+      ...source,
+      share: Math.round(smoothedLocal * ratio)
+    };
+  });
+  const totalShare = sources.reduce((sum, source) => sum + source.share, 0);
+
+  if (sources.length > 0 && totalShare !== 100) {
+    sources[0] = {
+      ...sources[0],
+      share: clamp(sources[0].share + (100 - totalShare), 0, 100)
+    };
+  }
+
+  const dominantSource = sources[0]?.name ?? "Regional transport";
+
+  return {
+    ...current,
+    importedShare: smoothedImported,
+    localShare: smoothedLocal,
+    confidence,
+    confidenceBreakdown: {
+      ...current.confidenceBreakdown,
+      history: clamp(Math.round((current.confidenceBreakdown.history + smoothedOverall) / 2), 0, 100),
+      overall: smoothedOverall
+    },
+    summary: buildAttributionSummary({
+      dominantSource,
+      importedShare: smoothedImported,
+      windDirection,
+      regime: current.regime
+    }),
+    sources: sources.sort((a, b) => b.share - a.share)
+  };
 }
 
 function computeAttribution(input: {
@@ -1147,6 +1455,22 @@ function computeAttribution(input: {
     0,
     1
   );
+  const regime = detectRegime({
+    localSpike,
+    stagnation,
+    transportStrength,
+    persistence,
+    agriCorridor,
+    industrialCorridor,
+    localShelterFlow,
+    trajectory,
+    fireSignal,
+    modelEvidence,
+    registryEvidence,
+    dustPotential,
+    modeledDustBoost,
+    aerosolSupport
+  });
   const localScore =
     0.72 +
     stagnation * 1.1 +
@@ -1180,11 +1504,15 @@ function computeAttribution(input: {
     transportStrength * 0.18 +
     modeledDustBoost * 0.42 +
     seasonalPriors.dust;
+  const localScoreAdjusted = localScore * regime.localMultiplier;
+  const fireScoreAdjusted = fireScore * regime.fireMultiplier;
+  const transportScoreAdjusted = transportScore * regime.transportMultiplier;
+  const dustScoreAdjusted = dustScore * regime.dustMultiplier;
   const contributors: ContributorCandidate[] = [];
 
   contributors.push({
     name:
-      localSpike >= 0.28
+      regime.name === "Local accumulation" || localSpike >= 0.28
         ? "Kathmandu valley accumulation"
         : registryEvidence.localKilnCount >= 4
           ? "Kathmandu local emissions + kilns"
@@ -1199,23 +1527,23 @@ function computeAttribution(input: {
           ? "Observed PM2.5 is running hotter than the modeled background, supporting local build-up"
           : "Lighter valley winds favor local build-up from urban and kiln emissions"
         : "Local emissions remain material inside the valley basin",
-    score: localScore,
+    score: localScoreAdjusted,
     imported: false
   });
 
-  if (fireSignal.hotspotCount > 0 && fireScore >= 0.35) {
+  if (fireSignal.hotspotCount > 0 && fireScoreAdjusted >= 0.35) {
     contributors.push({
       name:
         fireSignal.inferredSourceName === "Probable agricultural burning, northern India"
           ? `${input.windDirection} crop-belt fire corridor`
           : `${input.windDirection} upwind hotspot corridor`,
       evidence: `${fireSignal.inferredEvidenceLabel} with ${input.windDirection} transport`,
-      score: fireScore,
+      score: fireScoreAdjusted,
       imported: true
     });
   }
 
-  if (transportScore >= 0.4) {
+  if (transportScoreAdjusted >= 0.4) {
     contributors.push({
       name: `${input.windDirection} regional haze transport`,
       evidence:
@@ -1224,12 +1552,12 @@ function computeAttribution(input: {
           : aerosolSupport >= 0.4
             ? `${Math.round(pm25Stats.avg12h || input.pm25)} ug/m3 recent mean with elevated modeled aerosol loading`
             : `${Math.round(pm25Stats.avg12h || input.pm25)} ug/m3 recent mean with sustained upwind transport`,
-      score: transportScore,
+      score: transportScoreAdjusted,
       imported: true
     });
   }
 
-  if (dustScore >= 0.28 || input.windSpeedKph >= 11) {
+  if (dustScoreAdjusted >= 0.28 || input.windSpeedKph >= 11) {
     contributors.push({
       name:
         input.windSpeedKph >= 11
@@ -1239,7 +1567,7 @@ function computeAttribution(input: {
         modelEvidence.modeledDust && modelEvidence.modeledDust >= 10
           ? `Modeled dust ${modelEvidence.modeledDust} ug/m3 aligns with surface resuspension risk`
           : `${input.windSpeedKph} kph surface winds support particulate lift and resuspension`,
-      score: dustScore,
+      score: dustScoreAdjusted,
       imported: input.windSpeedKph >= 11
     });
   }
@@ -1271,7 +1599,8 @@ function computeAttribution(input: {
       modelEvidence.agreementScore * 0.12 +
       clamp(stationCount / 4, 0, 1) * 0.04 +
       clamp(fireSignal.hotspotCount / 40, 0, 1) * 0.04 +
-      clamp(pm25Stats.count24h / 18, 0, 1) * 0.06,
+      clamp(pm25Stats.count24h / 18, 0, 1) * 0.06 +
+      regime.confidence * 0.06,
     0,
     1
   );
@@ -1310,10 +1639,12 @@ function computeAttribution(input: {
     overall: Math.round(confidenceScore * 100)
   };
   const dominantSource = sources[0]?.name ?? "Regional transport";
-  const summary =
-    importedShare >= 55
-      ? `${dominantSource} likely drove most of the current PM2.5 load, with ${input.windDirection} transport sustaining imported haze into Kathmandu.`
-      : `${dominantSource} appears to be the leading contributor, but current conditions still point to a mixed balance between imported haze and local valley emissions.`;
+  const summary = buildAttributionSummary({
+    dominantSource,
+    importedShare,
+    windDirection: input.windDirection,
+    regime
+  });
 
   return {
     summary,
@@ -1321,7 +1652,8 @@ function computeAttribution(input: {
     localShare,
     confidence,
     confidenceBreakdown,
-    sources: sources.map(({ imported: _imported, ...source }) => source)
+    sources,
+    regime
   };
 }
 
@@ -1560,7 +1892,7 @@ async function fetchBestLatestPm25() {
         distanceKm: station.distanceKm
       });
 
-      if (candidates.length >= 5) {
+      if (candidates.length >= 6) {
         break;
       }
     } catch (error) {
@@ -1586,27 +1918,38 @@ async function fetchBestLatestPm25() {
       return {
         ...candidate,
         freshnessHours,
-        weight
+        baseWeight: weight
       };
     });
-    const totalWeight = weighted.reduce((sum, candidate) => sum + candidate.weight, 0);
-    const consensusValue =
-      totalWeight > 0
-        ? weighted.reduce(
-            (sum, candidate) => sum + candidate.measurement.value * candidate.weight,
-            0
-          ) / totalWeight
-        : weighted[0].measurement.value;
-    const disagreement =
-      totalWeight > 0
-        ? Math.sqrt(
-            weighted.reduce((sum, candidate) => {
-              const diff = candidate.measurement.value - consensusValue;
-              return sum + diff * diff * candidate.weight;
-            }, 0) / totalWeight
-          )
-        : 0;
-    const primary = weighted[0];
+    const candidateValues = weighted.map((candidate) => candidate.measurement.value);
+    const medianValue = median(candidateValues);
+    const absoluteDeviations = candidateValues.map((value) => Math.abs(value - medianValue));
+    const mad = median(absoluteDeviations);
+    const robustScale = Math.max(mad * 1.4826, 4);
+    const robustWeighted = weighted.map((candidate) => {
+      const consensusDelta = candidate.measurement.value - medianValue;
+      const zScore = Math.abs(consensusDelta) / robustScale;
+      const outlierPenalty =
+        zScore <= 1 ? 1 : zScore <= 2.5 ? clamp(1 - (zScore - 1) / 1.5 * 0.55, 0.45, 1) : 0.18;
+      const adjustedWeight = clamp(candidate.baseWeight * outlierPenalty, 0.05, 1);
+
+      return {
+        ...candidate,
+        consensusDelta,
+        outlierPenalty,
+        weight: adjustedWeight
+      };
+    });
+    const weights = robustWeighted.map((candidate) => candidate.weight);
+    const consensusValue = weightedAverage(candidateValues, weights);
+    const disagreement = weightedStandardDeviation(candidateValues, weights, consensusValue);
+    const spreadUgM3 = Math.round(disagreement * 10) / 10;
+    const primary = [...robustWeighted].sort(
+      (a, b) => b.weight - a.weight || a.distanceKm - b.distanceKm
+    )[0];
+    const outlierCount = robustWeighted.filter((candidate) => candidate.outlierPenalty < 0.7).length;
+    const agreementScore = clamp(1 - disagreement / 16 - outlierCount * 0.08, 0, 1);
+    const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
 
     return {
       location: primary.location,
@@ -1615,16 +1958,18 @@ async function fetchBestLatestPm25() {
         value: consensusValue
       },
       stationQuality:
-        weighted.reduce(
+        robustWeighted.reduce(
           (sum, candidate) => sum + candidate.stationQuality * candidate.weight,
           0
         ) / totalWeight,
       distanceKm:
-        weighted.reduce((sum, candidate) => sum + candidate.distanceKm * candidate.weight, 0) /
+        robustWeighted.reduce((sum, candidate) => sum + candidate.distanceKm * candidate.weight, 0) /
         totalWeight,
-      agreementScore: clamp(1 - disagreement / 18, 0, 1),
-      stationCount: weighted.length,
-      stations: weighted.map((candidate) => ({
+      agreementScore,
+      spreadUgM3,
+      outlierCount,
+      stationCount: robustWeighted.length,
+      stations: robustWeighted.map((candidate) => ({
         locationId: candidate.location.id,
         sensorId: candidate.measurement.sensorsId ?? null,
         label:
@@ -1638,7 +1983,9 @@ async function fetchBestLatestPm25() {
         distanceKm: Math.round(candidate.distanceKm),
         stationQuality: Math.round(candidate.stationQuality * 100),
         weight: Math.round(candidate.weight * 100),
-        freshnessHours: Math.round(candidate.freshnessHours * 10) / 10
+        freshnessHours: Math.round(candidate.freshnessHours * 10) / 10,
+        consensusDelta: Math.round(candidate.consensusDelta * 10) / 10,
+        outlierPenalty: Math.round(candidate.outlierPenalty * 100)
       }))
     };
   }
@@ -2714,7 +3061,8 @@ function build24HourTimeline(
         dominantSource: attribution.sources[0]?.name ?? "Unknown",
         windDirection,
         windSpeedKph,
-        transportPath: buildWindTrajectoryPath(weather, timestamp)
+        transportPath: buildWindTrajectoryPath(weather, timestamp),
+        regime: attribution.regime
       };
     });
 }
@@ -3077,7 +3425,12 @@ export async function getSnapshot(): Promise<CitySnapshot> {
   noStore();
 
   const generatedAt = new Date().toISOString();
-  const [{ measurement, stationQuality, agreementScore, stationCount, stations }, weather, airQuality, fireSignal] = await Promise.all([
+  const [
+    { measurement, stationQuality, agreementScore, spreadUgM3, outlierCount, stationCount, stations },
+    weather,
+    airQuality,
+    fireSignal
+  ] = await Promise.all([
     fetchBestLatestPm25(),
     fetchWindData(),
     fetchAirQualityData(),
@@ -3133,6 +3486,11 @@ export async function getSnapshot(): Promise<CitySnapshot> {
     trajectoryEvidence,
     registryEvidence
   });
+  const smoothedAttribution = smoothAttribution(
+    attribution,
+    getRecentSnapshots(8),
+    windDirection
+  );
   const feed = buildSixHourFeed(hourlyFeed, weather);
   const timeline24h = build24HourTimeline(
     hourlyFeed,
@@ -3154,12 +3512,12 @@ export async function getSnapshot(): Promise<CitySnapshot> {
     aqi,
     aqiCategory,
     category,
-    importedShare: attribution.importedShare,
-    localShare: attribution.localShare,
-    confidence: attribution.confidence,
-    summary: attribution.summary,
+    importedShare: smoothedAttribution.importedShare,
+    localShare: smoothedAttribution.localShare,
+    confidence: smoothedAttribution.confidence,
+    summary: smoothedAttribution.summary,
     coordinates: kathmandu.coordinates,
-    sources: attribution.sources,
+    sources: smoothedAttribution.sources.map(({ imported: _imported, ...source }) => source),
     windTrail,
     feed,
     timeline24h,
@@ -3170,10 +3528,13 @@ export async function getSnapshot(): Promise<CitySnapshot> {
       primarySensorId: measurement.sensorsId ?? null,
       stationQuality,
       agreementScore,
-      stationCount
+      stationCount,
+      spreadUgM3,
+      outlierCount,
+      consensusMethod: "robust-weighted-mean"
     },
     modelEvidence,
-    confidenceBreakdown: attribution.confidenceBreakdown,
+    confidenceBreakdown: smoothedAttribution.confidenceBreakdown,
     fireEvidence: fireSignal ?? {
       hotspotCount: 0,
       hotspotDensity: 0,
@@ -3190,6 +3551,7 @@ export async function getSnapshot(): Promise<CitySnapshot> {
       registryEvidence,
       trajectoryEvidence
     }),
+    regime: smoothedAttribution.regime,
     dataMode: "live",
     interpretationMode: "heuristic"
   };

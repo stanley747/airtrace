@@ -21,6 +21,21 @@ export type SevenDayTrendEntry = {
   dominantSource: string;
 };
 
+export type RecentSnapshotEntry = {
+  generatedAt: string;
+  updatedAt: string;
+  city: string;
+  country: string;
+  pm25: number;
+  aqi: number;
+  aqiCategory: string;
+  category: string;
+  importedShare: number;
+  localShare: number;
+  confidence: "Low" | "Medium" | "High";
+  summary: string;
+};
+
 declare global {
   var __airtraceDb: DatabaseHandle | undefined;
 }
@@ -267,7 +282,7 @@ export function getRecentSnapshots(limit = 24) {
         LIMIT ?
       `
     )
-    .all(limit);
+    .all(limit) as RecentSnapshotEntry[];
 }
 
 export function getRecentFireEvidence(limit = 24) {

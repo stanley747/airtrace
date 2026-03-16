@@ -171,13 +171,18 @@ export function TimelinePlayer({ cityName, coordinates, frames }: TimelinePlayer
             {activeFrame.windDirection} {activeFrame.windSpeedKph} kph
           </strong>
         </div>
+        <div className="timeline-stat">
+          <span>Regime</span>
+          <strong>{activeFrame.regime.name}</strong>
+        </div>
       </div>
 
       <div className="timeline-callout">
         <span className="note-label">FRAME READOUT</span>
         <p>
-          {activeFrame.dominantSource} led this hour with {activeFrame.confidence.toLowerCase()}{" "}
-          confidence.
+          {activeFrame.dominantSource} led this hour under a{" "}
+          {activeFrame.regime.name.toLowerCase()} regime with{" "}
+          {activeFrame.confidence.toLowerCase()} confidence.
         </p>
       </div>
     </div>
